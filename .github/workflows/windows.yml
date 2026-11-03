@@ -1,0 +1,40 @@
+name: Windows
+
+on:
+  push:
+    paths:
+      - 'windows/**'
+      - '.github/workflows/windows.yml'
+  pull_request:
+    paths:
+      - 'windows/**'
+      - '.github/workflows/windows.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build and smoke test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows Server 2022 has the Windows 10 taskbar, Server 2025 the Windows 11 one.
+        os: [windows-2022, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: dotnet build windows/Countdown.csproj --configuration Release --output windows/out
+
+      - name: Self-check, screenshots and diagnostics
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File windows/ci/smoke.ps1 -Exe windows/out/Countdown.exe -OutDir windows/out/smoke
+
+      - name: Upload the app and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Countdown-${{ matrix.os }}
+          path: |
+            windows/out/Countdown.exe
+            windows/out/smoke/
+          if-no-files-found: warn
