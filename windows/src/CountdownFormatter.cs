@@ -91,6 +91,18 @@ namespace Countdown
             return parts.Length - 1;
         }
 
+        /// <summary>
+        /// Cuts <paramref name="text"/> to at most <paramref name="maxChars"/> UTF-16 units,
+        /// ellipsis included, never between the two halves of a surrogate pair (an emoji).
+        /// </summary>
+        public static string Ellipsize(string text, int maxChars)
+        {
+            if (text.Length <= maxChars) return text;
+            int keep = Math.Max(0, maxChars - 1);
+            if (keep > 0 && char.IsHighSurrogate(text[keep - 1])) keep--;
+            return text.Substring(0, keep).TrimEnd() + "…";
+        }
+
         static string Label(long count, string unit) =>
             count.ToString(CultureInfo.InvariantCulture) + " " + unit + (count == 1 ? "" : "s");
     }

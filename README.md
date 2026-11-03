@@ -42,7 +42,10 @@ Requires Windows 10 or 11. It uses .NET Framework 4.8, which Windows already inc
 3. The countdown appears in the taskbar, just left of the clock and tray icons. Click it and
    choose **Set Countdown…** to pick your event. **Start with Windows** starts it at sign-in.
 
-On a vertical taskbar it falls back to a tray icon whose tooltip shows the countdown.
+It never covers app buttons. When the space beside the clock is taken it moves to the
+taskbar's free space, usually the empty left side of a centred Windows 11 taskbar; with no
+room at all it shows just the time, and as a last resort, or on a vertical taskbar, it
+becomes a tray icon whose tooltip shows the countdown.
 Settings are stored under `HKEY_CURRENT_USER\Software\Countdown`.
 
 Build it yourself with the [.NET SDK](https://dotnet.microsoft.com/download):

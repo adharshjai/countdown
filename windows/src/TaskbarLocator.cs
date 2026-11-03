@@ -47,6 +47,8 @@ namespace Countdown
 
             TaskbarSnapshot? snapshot = synchronousScan ? TaskbarScan.TryTake(taskbar) : TaskbarScan.Latest(taskbar);
             layout.Occupied = snapshot?.Occupied;
+            // Without UI Automation the buttons stay unknown; place the label beside the tray anyway.
+            if (snapshot == null && TaskbarScan.HasFailedFor(taskbar)) layout.Occupied = Array.Empty<(int left, int right)>();
 
             if (TrayFromWindow(taskbar, bounds, out int left))
             {
@@ -99,6 +101,16 @@ namespace Countdown
         public int TrayLeft { get; }
         /// <summary>Every other visible button and text field: Start, search, widgets, apps.</summary>
         public IReadOnlyList<(int left, int right)> Occupied { get; }
+
+        public bool SameAs(TaskbarSnapshot? other)
+        {
+            if (other == null || other.Taskbar != Taskbar || other.TrayLeft != TrayLeft || other.Occupied.Count != Occupied.Count) return false;
+            for (int i = 0; i < Occupied.Count; i++)
+            {
+                if (Occupied[i] != other.Occupied[i]) return false;
+            }
+            return true;
+        }
     }
 
     /// <summary>
@@ -109,18 +121,33 @@ namespace Countdown
     /// </summary>
     internal static class TaskbarScan
     {
-        const double RefreshSeconds = 2;
+        const int RefreshMilliseconds = 2000;
         static readonly object Gate = new object();
         static TaskbarSnapshot? latest;
-        static DateTime refreshedUtc = DateTime.MinValue;
+        static int refreshedAt;
+        static bool everRefreshed;
         static bool refreshing;
+        static bool failed;
+
+        /// <summary>Raised on a pool thread when a scan finds the buttons or tray somewhere new.</summary>
+        public static event Action? Changed;
+
+        /// <summary>True when the last scan threw and there is no snapshot of this taskbar to fall back on.</summary>
+        public static bool HasFailedFor(IntPtr taskbar)
+        {
+            lock (Gate)
+            {
+                return failed && (latest == null || latest.Taskbar != taskbar);
+            }
+        }
 
         /// <summary>The newest snapshot of this taskbar (null before the first), refreshing if due.</summary>
         public static TaskbarSnapshot? Latest(IntPtr taskbar)
         {
             lock (Gate)
             {
-                if (!refreshing && (DateTime.UtcNow - refreshedUtc).TotalSeconds >= RefreshSeconds)
+                // Environment.TickCount is monotonic: setting the clock back cannot stall the scans.
+                if (!refreshing && (!everRefreshed || unchecked(Environment.TickCount - refreshedAt) >= RefreshMilliseconds))
                 {
                     refreshing = true;
                     ThreadPool.QueueUserWorkItem(_ => Refresh(taskbar));
@@ -132,12 +159,17 @@ namespace Countdown
         static void Refresh(IntPtr taskbar)
         {
             TaskbarSnapshot? snapshot = TryTake(taskbar);
+            bool changed;
             lock (Gate)
             {
+                changed = snapshot != null && !snapshot.SameAs(latest);
                 if (snapshot != null) latest = snapshot;
-                refreshedUtc = DateTime.UtcNow;
+                failed = snapshot == null;
+                refreshedAt = Environment.TickCount;
+                everRefreshed = true;
                 refreshing = false;
             }
+            if (changed) Changed?.Invoke();
         }
 
         public static TaskbarSnapshot? TryTake(IntPtr taskbar)

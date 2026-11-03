@@ -1,5 +1,6 @@
 using System;
 using System.Drawing;
+using System.Globalization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
@@ -7,12 +8,15 @@ namespace Countdown
 {
     /// <summary>
     /// The app: ticks once a second on the whole-second boundary, keeps the taskbar label (or,
-    /// when the taskbar cannot host it, a notification-area icon) up to date, and runs the menu.
+    /// when the taskbar has no room for it, a notification-area icon) up to date, and runs the menu.
     /// </summary>
     internal sealed class CountdownApp : ApplicationContext
     {
         const uint IdName = 10, IdDate = 11, IdRemaining = 12;
         const uint IdSetCountdown = 1, IdStartWithWindows = 2, IdQuit = 3;
+
+        /// <summary>The longest tray tooltip .NET Framework accepts.</summary>
+        const int MaxTooltipLength = 63;
 
         readonly MessageWindow messages = new MessageWindow();
         readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
@@ -23,6 +27,7 @@ namespace Countdown
         CountdownTarget target;
         bool lightTaskbar;
         bool menuOpen;
+        int menuClosedAt = Environment.TickCount - 60_000;
 
         public CountdownApp()
         {
@@ -31,7 +36,7 @@ namespace Countdown
 
             tray.Icon = AppIcon.LoadSmall();
             tray.Text = "Countdown";
-            tray.MouseUp += (s, e) => ShowMenu(anchorToLabel: false);
+            tray.MouseUp += OnTrayMouseUp;
             label.Clicked += () => ShowMenu(anchorToLabel: true);
             messages.ShowSettingsRequested += ShowSettings;
             messages.ThemeChanged += Resync;
@@ -39,11 +44,12 @@ namespace Countdown
             lightTaskbar = Theme.TaskbarIsLight();
             Theme.MatchMenusToTaskbar();
 
-            // System events can arrive on another thread; hop to the UI thread first.
+            // System events and scans arrive on other threads; they hop to the UI thread first.
             SystemEvents.PowerModeChanged += OnPowerModeChanged;
-            SystemEvents.TimeChanged += OnSystemChanged;
-            SystemEvents.DisplaySettingsChanged += OnSystemChanged;
+            SystemEvents.TimeChanged += OnTimeChanged;
+            SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
             SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
+            TaskbarScan.Changed += ResyncOnUiThread;
 
             timer.Tick += (s, e) => Resync();
             Resync();
@@ -95,21 +101,22 @@ namespace Countdown
 
             double remaining = Clock.SecondsUntil(target.WhenUtc);
             string title = CountdownFormatter.TaskbarTitle(remaining, TaskbarLabel.Shorten(target.Name));
-            bool onTaskbar = false;
+            LabelState state = LabelState.Unavailable;
             TaskbarLayout? layout = TaskbarLocator.Find();
             if (layout != null && layout.IsHorizontal)
             {
-                onTaskbar = label.Update(title, CountdownFormatter.TaskbarCompact(remaining), layout, light);
+                state = label.Update(title, CountdownFormatter.TaskbarCompact(remaining), layout, light);
             }
             else
             {
                 label.Detach();
             }
 
-            // The notification-area icon is only a fallback: no taskbar, a vertical one, or one
-            // too crowded for even the compact text.
-            if (!onTaskbar) tray.Text = Truncate(title, 63);
-            if (tray.Visible == onTaskbar) tray.Visible = !onTaskbar;
+            // The notification-area icon is only a fallback: no taskbar, a vertical one, or one too
+            // crowded for even the time alone. While the first scan runs, neither is shown.
+            bool useTray = state == LabelState.NoRoom || state == LabelState.Unavailable;
+            if (useTray) tray.Text = CountdownFormatter.Ellipsize(title, MaxTooltipLength);
+            if (tray.Visible != useTray) tray.Visible = useTray;
 
             settings?.Tick(light);
         }
@@ -119,11 +126,23 @@ namespace Countdown
             if (e.Mode == PowerModes.Resume) ResyncOnUiThread();
         }
 
-        void OnSystemChanged(object? sender, EventArgs e) => ResyncOnUiThread();
+        void OnTimeChanged(object? sender, EventArgs e)
+        {
+            // .NET Framework caches the local time zone; a zone change also changes the time.
+            TimeZoneInfo.ClearCachedData();
+            ResyncOnUiThread();
+        }
+
+        void OnDisplaySettingsChanged(object? sender, EventArgs e) => ResyncOnUiThread();
 
         void OnUserPreferenceChanged(object sender, UserPreferenceChangedEventArgs e)
         {
-            if (e.Category == UserPreferenceCategory.General || e.Category == UserPreferenceCategory.VisualStyle) ResyncOnUiThread();
+            if (e.Category == UserPreferenceCategory.Locale) CultureInfo.CurrentCulture.ClearCachedData();
+            if (e.Category == UserPreferenceCategory.General || e.Category == UserPreferenceCategory.VisualStyle
+                || e.Category == UserPreferenceCategory.Locale)
+            {
+                ResyncOnUiThread();
+            }
         }
 
         void ResyncOnUiThread()
@@ -141,10 +160,18 @@ namespace Countdown
 
         // MARK: menu
 
+        void OnTrayMouseUp(object? sender, MouseEventArgs e)
+        {
+            // The click on the icon that closed the menu must not open it again.
+            if (unchecked(Environment.TickCount - menuClosedAt) < 300) return;
+            ShowMenu(anchorToLabel: false);
+        }
+
         void ShowMenu(bool anchorToLabel)
         {
             if (menuOpen) return;
             menuOpen = true;
+            TimeZoneInfo.ClearCachedData();
             IntPtr menu = Native.CreatePopupMenu();
             try
             {
@@ -182,6 +209,8 @@ namespace Countdown
                 Native.SetForegroundWindow(messages.Handle);
                 int command = Native.TrackPopupMenuEx(menu, flags, x, y, messages.Handle, IntPtr.Zero);
                 Native.PostMessage(messages.Handle, Native.WM_NULL, IntPtr.Zero, IntPtr.Zero);
+                menuClosedAt = Environment.TickCount;
+                label.NoteMenuClosed();
 
                 switch ((uint)command)
                 {
@@ -203,9 +232,6 @@ namespace Countdown
         /// <summary>Menus treat "&amp;" as a mnemonic marker and a tab as a column break.</summary>
         static string MenuText(string text) => text.Replace("&", "&&").Replace('\t', ' ');
 
-        static string Truncate(string text, int max) =>
-            text.Length <= max ? text : text.Substring(0, max - 1) + "…";
-
         void ToggleStartWithWindows()
         {
             try
@@ -223,12 +249,24 @@ namespace Countdown
 
         void ShowSettings()
         {
-            if (settings == null || settings.IsDisposed)
+            TimeZoneInfo.ClearCachedData();
+            // WinForms on .NET Framework cannot rescale a form for another monitor's DPI, so the
+            // settings window is system-aware and Windows scales it instead. Every handle it
+            // owns is created inside this scope (on construction and on its first Show).
+            IntPtr previousDpi = Native.EnterSystemAwareDpi();
+            try
             {
-                settings = new SettingsForm(appIcon);
-                settings.Saved += Apply;
+                if (settings == null || settings.IsDisposed)
+                {
+                    settings = new SettingsForm(appIcon);
+                    settings.Saved += Apply;
+                }
+                settings.ShowFor(target, lightTaskbar);
             }
-            settings.ShowFor(target, lightTaskbar);
+            finally
+            {
+                Native.RestoreDpi(previousDpi);
+            }
         }
 
         void Apply(CountdownTarget newTarget)
@@ -252,9 +290,10 @@ namespace Countdown
         {
             timer.Stop();
             SystemEvents.PowerModeChanged -= OnPowerModeChanged;
-            SystemEvents.TimeChanged -= OnSystemChanged;
-            SystemEvents.DisplaySettingsChanged -= OnSystemChanged;
+            SystemEvents.TimeChanged -= OnTimeChanged;
+            SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
             SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
+            TaskbarScan.Changed -= ResyncOnUiThread;
             tray.Visible = false;
             label.Detach();
             if (settings != null)

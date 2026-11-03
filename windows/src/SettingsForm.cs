@@ -97,6 +97,8 @@ namespace Countdown
                 button.Margin = new Padding(8, 0, 0, 0);
                 buttons.Controls.Add(button);
             }
+            saveButton.TabIndex = 0;
+            cancelButton.TabIndex = 1;
             layout.Controls.Add(buttons);
             Controls.Add(layout);
 
@@ -108,6 +110,13 @@ namespace Countdown
             calendar.DateChanged += (s, e) => RefreshPreview();
             timePicker.ValueChanged += (s, e) => RefreshPreview();
             ResumeLayout(true);
+            calendar.CalendarDimensions = new Size(1, 1);
+        }
+
+        protected override void OnLoad(EventArgs e)
+        {
+            base.OnLoad(e);
+            calendar.CalendarDimensions = new Size(1, 1);
         }
 
         string NameText => nameBox.Text.Trim();
@@ -128,6 +137,8 @@ namespace Countdown
         {
             lightTaskbar = taskbarIsLight;
             DateTime local = target.WhenUtc.ToLocalTime();
+            if (local < calendar.MinDate) local = calendar.MinDate;
+            if (local > calendar.MaxDate) local = calendar.MaxDate;
             nameBox.Text = target.Name;
             calendar.SetDate(local.Date);
             timePicker.Value = new DateTime(2000, 1, 1, local.Hour, local.Minute, 0);
@@ -158,9 +169,8 @@ namespace Countdown
         void RefreshPreview()
         {
             string name = NameText;
-            string title = CountdownFormatter.TaskbarTitle(Clock.SecondsUntil(SelectedLocal.ToUniversalTime()),
-                TaskbarLabel.Shorten(name.Length > 0 ? name : "Event name"));
-            preview.Set(title, dimmed: name.Length == 0, light: lightTaskbar);
+            preview.Set(Clock.SecondsUntil(SelectedLocal.ToUniversalTime()),
+                TaskbarLabel.Shorten(name.Length > 0 ? name : "Event name"), dimmed: name.Length == 0, light: lightTaskbar);
         }
 
         void Save()
@@ -192,23 +202,35 @@ namespace Countdown
         };
     }
 
-    /// <summary>A slice of taskbar that shows the text exactly as the taskbar label draws it.</summary>
+    /// <summary>
+    /// A slice of taskbar that shows the text as the taskbar label draws it. A name too long
+    /// for the slice is cut with an ellipsis, as the macOS preview does.
+    /// </summary>
     internal sealed class PreviewBar : Control
     {
-        string text = "";
+        double remaining;
+        string name = "";
         bool dimmed;
         bool light;
+        string shownKey = "";
+        Raster? fitted;
+        string fittedKey = "";
 
         public PreviewBar()
         {
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer
                 | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+            SetStyle(ControlStyles.Selectable, false);
+            TabStop = false;
         }
 
-        public void Set(string newText, bool dimmed, bool light)
+        public void Set(double newRemaining, string newName, bool dimmed, bool light)
         {
-            if (newText == text && dimmed == this.dimmed && light == this.light) return;
-            text = newText;
+            string key = CountdownFormatter.TaskbarTitle(newRemaining, newName) + "|" + dimmed + "|" + light;
+            if (key == shownKey) return;
+            shownKey = key;
+            remaining = newRemaining;
+            name = newName;
             this.dimmed = dimmed;
             this.light = light;
             Invalidate();
@@ -228,14 +250,36 @@ namespace Countdown
                 g.FillPath(fill, path);
             }
 
-            int rgb = dimmed ? 0x8A8A8A : light ? 0x000000 : 0xFFFFFF;
-            Raster raster = TextRaster.Render(text, new TextRaster.Style { TextRgb = rgb, Dpi = DeviceDpi });
+            int pad = Native.Scale(12, DeviceDpi);
+            Raster raster = Fit(Math.Max(1, Width - 2 * pad));
             using (Bitmap bitmap = raster.ToBitmap())
             {
-                int x = Math.Max(0, (Width - bitmap.Width) / 2);
+                int x = Math.Max(pad, (Width - bitmap.Width) / 2);
                 int y = Math.Max(0, (Height - bitmap.Height) / 2);
                 g.DrawImage(bitmap, new Rectangle(x, y, bitmap.Width, bitmap.Height));
             }
+        }
+
+        /// <summary>The line at its full length, or with the name shortened until it fits.</summary>
+        Raster Fit(int available)
+        {
+            string key = shownKey + "|" + available + "|" + DeviceDpi;
+            if (fitted != null && key == fittedKey) return fitted;
+
+            var style = new TextRaster.Style { TextRgb = dimmed ? 0x8A8A8A : light ? 0x000000 : 0xFFFFFF, Dpi = DeviceDpi };
+            string title = CountdownFormatter.TaskbarTitle(remaining, name);
+            Raster raster = TextRaster.Render(title, style);
+            int max = name.Length;
+            while (raster.Width > available && max > 2)
+            {
+                int drop = Math.Max(1, (int)Math.Ceiling((raster.Width - available) * (double)title.Length / raster.Width));
+                max = Math.Max(2, max - drop);
+                title = CountdownFormatter.TaskbarTitle(remaining, CountdownFormatter.Ellipsize(name, max));
+                raster = TextRaster.Render(title, style);
+            }
+            fitted = raster;
+            fittedKey = key;
+            return raster;
         }
 
         static GraphicsPath RoundedRectangle(RectangleF r, float radius)

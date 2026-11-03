@@ -73,12 +73,12 @@ namespace Countdown
             // Placement on a taskbar whose label area runs from x=10 to x=800 (the tray).
             var placementCases = new (string note, int width, (int, int)[]? occupied, string expected)[]
             {
-                ("not scanned yet", 200, null, "600"),
+                ("not scanned yet", 200, null, "none"),
                 ("room beside the tray", 200, new[] { (0, 100), (300, 500) }, "600"),
                 ("tray side crowded, room on the left", 200, new[] { (300, 700) }, "14"),
                 ("picks the widest free stretch", 200, new[] { (200, 230), (480, 700) }, "234"),
                 ("nothing fits", 200, new[] { (0, 790) }, "none"),
-                ("wider than the taskbar", 900, null, "none"),
+                ("wider than the taskbar", 900, new (int, int)[0], "none"),
             };
             foreach (var c in placementCases)
             {
@@ -99,6 +99,8 @@ namespace Countdown
                 ("Trip", "2027-03-14T10:09:26-05:00", "name=Trip; target=kept; usedFallback=False"),
                 ("Trip", "soon", "name=New Year; target=fallback; usedFallback=True"),
                 ("Trip", 42, "name=New Year; target=fallback; usedFallback=True"),
+                ("Trip", "1700-01-01T00:00:00Z", "name=New Year; target=fallback; usedFallback=True"),
+                ("Trip", "9999-06-01T00:00:00Z", "name=New Year; target=fallback; usedFallback=True"),
                 (42, goodDate, "name=New Year; target=fallback; usedFallback=True"),
             };
             foreach (var c in validateCases)
@@ -109,6 +111,21 @@ namespace Countdown
                     : "other";
                 Check($"Validate({DescribeValue(c.name)}, {DescribeValue(c.date)})",
                     $"name={target.Name}; target={kind}; usedFallback={usedFallback}", c.expected);
+            }
+
+            // Shortening never splits an emoji's surrogate pair.
+            string party = "\U0001F389";
+            var ellipsisCases = new (string text, int max, string expected)[]
+            {
+                ("Trip", 48, "Trip"),
+                ("abcdefgh", 5, "abcd…"),
+                ("abc" + party + "def", 5, "abc…"),
+                ("abc " + party, 6, "abc " + party),
+                ("ab   cdef", 6, "ab…"),
+            };
+            foreach (var c in ellipsisCases)
+            {
+                Check($"Ellipsize({DescribeValue(c.text)}, {c.max})", CountdownFormatter.Ellipsize(c.text, c.max), c.expected);
             }
 
             // Text runs: emoji go to Segoe UI Emoji, everything else to Segoe UI.

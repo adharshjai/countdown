@@ -1,5 +1,6 @@
 # Smoke test for CI: runs the self-check, then launches Countdown in each state and saves
-# screenshots (full screen plus a 3x crop of the taskbar) and diagnostics to -OutDir.
+# screenshots (full screen plus a 2x crop of the taskbar) and diagnostics to -OutDir.
+# It changes the taskbar theme while it runs and puts the old value back.
 param(
     [Parameter(Mandatory = $true)] [string] $Exe,
     [Parameter(Mandatory = $true)] [string] $OutDir
@@ -43,9 +44,9 @@ function Save-Shot([string] $Name) {
     if ($taskbar -ne [IntPtr]::Zero) {
         $r = New-Object 'Win+RECT'
         [void][Win]::GetWindowRect($taskbar, [ref] $r)
-        $w = [int](($r.Right - $r.Left) * 0.55)
+        $w = $r.Right - $r.Left
         $h = $r.Bottom - $r.Top
-        $zoom = 3
+        $zoom = 2
         $crop = New-Object System.Drawing.Bitmap -ArgumentList ($w * $zoom), ($h * $zoom)
         $g = [System.Drawing.Graphics]::FromImage($crop)
         $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::NearestNeighbor
@@ -81,14 +82,20 @@ function Stop-Countdown($p) {
     Start-Sleep -Seconds 1
 }
 
+# New-Item -Force on an existing registry key replaces it with an empty one, so only create
+# keys that are missing.
+function Confirm-Key([string] $Path) {
+    if (-not (Test-Path $Path)) { New-Item -Path $Path | Out-Null }
+}
+
 function Set-Countdown([string] $Name, [datetime] $WhenUtc) {
-    New-Item -Path $key -Force | Out-Null
+    Confirm-Key $key
     New-ItemProperty -Path $key -Name EventName -Value $Name -PropertyType String -Force | Out-Null
     New-ItemProperty -Path $key -Name Target -Value $WhenUtc.ToString('o') -PropertyType String -Force | Out-Null
 }
 
 function Set-TaskbarTheme([int] $Light) {
-    New-Item -Path $personalize -Force | Out-Null
+    Confirm-Key $personalize
     New-ItemProperty -Path $personalize -Name SystemUsesLightTheme -Value $Light -PropertyType DWord -Force | Out-Null
     $result = [IntPtr]::Zero
     [void][Win]::SendMessageTimeout([IntPtr]0xffff, 0x1A, [IntPtr]::Zero, 'ImmersiveColorSet', 2, 5000, [ref] $result)

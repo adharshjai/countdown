@@ -10,14 +10,15 @@ namespace Countdown
     /// The free stretches are the parts of [areaLeft, areaRight] that no taskbar button covers.
     /// The label hugs the notification area when the stretch beside it is wide enough (like the
     /// clock), else it takes the widest other stretch, left-aligned (on Windows 11 that is
-    /// usually the empty left side next to the centred icons). Null when nothing fits.
+    /// usually the empty left side next to the centred icons). Null when nothing fits or
+    /// the buttons are not known yet.
     /// </summary>
     internal static class Placement
     {
         public static int? Choose(int width, int areaLeft, int areaRight, IReadOnlyList<(int left, int right)>? occupied, int margin)
         {
             if (width <= 0 || areaRight - areaLeft < width) return null;
-            if (occupied == null) return areaRight - width; // not scanned yet: beside the tray
+            if (occupied == null) return null; // not scanned yet: any spot could cover a button
 
             var gaps = FreeStretches(areaLeft, areaRight, occupied);
             var besideTray = gaps.FirstOrDefault(g => g.right == areaRight);

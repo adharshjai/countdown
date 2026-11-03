@@ -17,7 +17,9 @@ namespace Countdown
         public const int WM_SETTINGCHANGE = 0x001A;
         public const int WM_MOUSEACTIVATE = 0x0021;
         public const int WM_MOUSEMOVE = 0x0200;
+        public const int WM_LBUTTONDOWN = 0x0201;
         public const int WM_LBUTTONUP = 0x0202;
+        public const int WM_RBUTTONDOWN = 0x0204;
         public const int WM_RBUTTONUP = 0x0205;
         public const int WM_MOUSELEAVE = 0x02A3;
         public const int MA_NOACTIVATE = 3;
@@ -60,6 +62,8 @@ namespace Countdown
         public const int STD_OUTPUT_HANDLE = -11;
         public const int ATTACH_PARENT_PROCESS = -1;
         public const uint LOAD_LIBRARY_SEARCH_SYSTEM32 = 0x00000800;
+        public const uint MSGFLT_ALLOW = 1;
+        public static readonly IntPtr DPI_AWARENESS_CONTEXT_SYSTEM_AWARE = new IntPtr(-2);
 
         [StructLayout(LayoutKind.Sequential)]
         public struct RECT
@@ -228,6 +232,13 @@ namespace Countdown
         public static extern uint RegisterWindowMessage(string lpString);
         [DllImport("user32.dll")]
         public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+        [DllImport("user32.dll")]
+        public static extern int GetMessageTime();
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool ChangeWindowMessageFilterEx(IntPtr hwnd, uint message, uint action, IntPtr pChangeFilterStruct);
+        [DllImport("user32.dll")]
+        public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr dpiContext);
 
         // Console (for --check and --diagnose) and late-bound theme entry points
         [DllImport("kernel32.dll")]
@@ -269,5 +280,34 @@ namespace Countdown
         }
 
         public static int Scale(int value, int dpi) => (int)Math.Round(value * dpi / 96.0);
+
+        /// <summary>
+        /// Switches this thread to system-aware DPI and returns the previous context (zero
+        /// before Windows 10 1607). Windows created meanwhile are scaled by Windows when they
+        /// move to a monitor with another DPI, which WinForms on .NET Framework cannot do itself.
+        /// </summary>
+        public static IntPtr EnterSystemAwareDpi()
+        {
+            try
+            {
+                return SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_SYSTEM_AWARE);
+            }
+            catch (EntryPointNotFoundException)
+            {
+                return IntPtr.Zero;
+            }
+        }
+
+        public static void RestoreDpi(IntPtr previous)
+        {
+            if (previous == IntPtr.Zero) return;
+            try
+            {
+                SetThreadDpiAwarenessContext(previous);
+            }
+            catch (EntryPointNotFoundException)
+            {
+            }
+        }
     }
 }

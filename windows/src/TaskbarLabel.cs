@@ -12,6 +12,18 @@ namespace Countdown
     /// through. Layered child windows need the Windows 8+ entries in app.manifest. If Explorer
     /// restarts, the next tick notices the new taskbar and builds the window again.
     /// </summary>
+    internal enum LabelState
+    {
+        /// <summary>On the taskbar.</summary>
+        Shown,
+        /// <summary>Waiting for the first scan of the taskbar's buttons; shows nothing yet.</summary>
+        NotReady,
+        /// <summary>Even the time alone does not fit beside the taskbar's buttons.</summary>
+        NoRoom,
+        /// <summary>The taskbar cannot host the label.</summary>
+        Unavailable,
+    }
+
     internal sealed class TaskbarLabel : NativeWindow, IDisposable
     {
         public const string Caption = "CountdownTaskbarLabel";
@@ -34,6 +46,9 @@ namespace Countdown
         int height;
         bool hover;
         bool renderedHover;
+        bool pressed;
+        bool menuJustClosed;
+        int menuClosedAt;
         Raster? full;
         Raster? compact;
         Raster? shown;
@@ -41,17 +56,33 @@ namespace Countdown
 
         public TaskbarLayout? Layout => layout;
 
-        public static string Shorten(string name) =>
-            name.Length <= MaxNameLength ? name : name.Substring(0, MaxNameLength - 1).TrimEnd() + "…";
+        public static string Shorten(string name) => CountdownFormatter.Ellipsize(name, MaxNameLength);
 
         /// <summary>
-        /// Shows the full text where it fits, else the compact text; false when neither fits
-        /// or the taskbar cannot host the window, so the caller can fall back to a tray icon.
+        /// Called when the menu closes. A click on the label that closes the menu has its
+        /// button-down eaten by the menu, so only presses that start after this open it again.
         /// </summary>
-        public bool Update(string newFull, string newCompact, TaskbarLayout newLayout, bool lightTaskbar)
+        public void NoteMenuClosed()
         {
-            if (!EnsureWindow(newLayout.Taskbar)) return false;
+            menuClosedAt = Environment.TickCount;
+            menuJustClosed = true;
+            pressed = false;
+        }
+
+        /// <summary>
+        /// Shows the full text where it fits, else the compact text. Anything but Shown leaves
+        /// the label hidden; NoRoom and Unavailable tell the caller to use the tray icon.
+        /// </summary>
+        public LabelState Update(string newFull, string newCompact, TaskbarLayout newLayout, bool lightTaskbar)
+        {
+            if (!EnsureWindow(newLayout.Taskbar)) return LabelState.Unavailable;
             layout = newLayout;
+            if (newLayout.Occupied == null)
+            {
+                // Until the first scan says where the buttons are, any spot could cover one.
+                Conceal();
+                return LabelState.NotReady;
+            }
 
             int newRgb = lightTaskbar ? 0x000000 : 0xFFFFFF;
             if (newRgb != textRgb || newLayout.Dpi != dpi || newLayout.ClientHeight != height || hover != renderedHover)
@@ -87,7 +118,7 @@ namespace Countdown
             if (screenX == null)
             {
                 Conceal();
-                return false;
+                return LabelState.NoRoom;
             }
 
             var origin = new Native.POINT(screenX.Value, newLayout.Bounds.Top);
@@ -107,7 +138,7 @@ namespace Countdown
                 Native.SetWindowPos(Handle, Native.HWND_TOP, 0, 0, 0, 0,
                     Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE | Native.SWP_SHOWWINDOW);
             }
-            return true;
+            return LabelState.Shown;
         }
 
         /// <summary>The label in screen pixels, for anchoring the menu.</summary>
@@ -259,9 +290,21 @@ namespace Countdown
                     hover = false;
                     Redraw();
                     break;
+                case Native.WM_LBUTTONDOWN:
+                case Native.WM_RBUTTONDOWN:
+                    // The first press after the menu closed counts only if it came after the close
+                    // (the press that closed it may still be queued); later presses always count.
+                    pressed = !menuJustClosed || unchecked(Native.GetMessageTime() - menuClosedAt) > 0;
+                    menuJustClosed = false;
+                    return;
                 case Native.WM_LBUTTONUP:
                 case Native.WM_RBUTTONUP:
-                    Clicked?.Invoke();
+                    menuJustClosed = false;
+                    if (pressed)
+                    {
+                        pressed = false;
+                        Clicked?.Invoke();
+                    }
                     return;
             }
             base.WndProc(ref m);

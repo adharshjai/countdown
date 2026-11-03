@@ -26,6 +26,8 @@ namespace Countdown
             Location = new System.Drawing.Point(-32000, -32000);
             Size = new System.Drawing.Size(1, 1);
             _ = Handle; // create the window now, without showing it
+            // Let a second launch reach this window even if this copy runs as administrator.
+            if (ShowSettingsMessage != 0) Native.ChangeWindowMessageFilterEx(Handle, (uint)ShowSettingsMessage, Native.MSGFLT_ALLOW, IntPtr.Zero);
         }
 
         protected override CreateParams CreateParams

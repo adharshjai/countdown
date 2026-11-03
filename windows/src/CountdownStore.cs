@@ -35,6 +35,10 @@ namespace Countdown
         public static readonly CountdownTarget Fallback = new CountdownTarget(
             "New Year", new DateTime(2027, 1, 1, 0, 0, 0, DateTimeKind.Local).ToUniversalTime());
 
+        /// <summary>The calendar's range (1753 to 9998), with a day of slack for time zones.</summary>
+        static readonly DateTime EarliestUtc = new DateTime(1753, 1, 2, 0, 0, 0, DateTimeKind.Utc);
+        static readonly DateTime LatestUtc = new DateTime(9998, 12, 30, 0, 0, 0, DateTimeKind.Utc);
+
         /// <summary>
         /// Accepts a string name that is non-empty once trimmed (kept trimmed) together with a
         /// parseable date string; anything else (missing values, wrong types, a blank name, a
@@ -51,7 +55,9 @@ namespace Countdown
             {
                 return (Fallback, true);
             }
-            return (new CountdownTarget(trimmed, DateTime.SpecifyKind(whenUtc, DateTimeKind.Utc)), false);
+            whenUtc = DateTime.SpecifyKind(whenUtc, DateTimeKind.Utc);
+            if (whenUtc < EarliestUtc || whenUtc > LatestUtc) return (Fallback, true);
+            return (new CountdownTarget(trimmed, whenUtc), false);
         }
 
         /// <summary>
