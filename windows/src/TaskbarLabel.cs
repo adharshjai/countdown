@@ -5,7 +5,7 @@ using System.Windows.Forms;
 namespace Countdown
 {
     /// <summary>
-    /// The countdown text, drawn inside the taskbar just left of the notification area.
+    /// The countdown text, drawn inside the taskbar.
     ///
     /// It is a layered child window of the taskbar (Shell_TrayWnd): it moves, hides and
     /// auto-hides with the taskbar, and per-pixel alpha lets the taskbar's own background show
@@ -19,56 +19,87 @@ namespace Countdown
         /// <summary>The longest event name the taskbar shows before cutting it with an ellipsis.</summary>
         const int MaxNameLength = 48;
 
+        const int SW_HIDE = 0;
+
+        [DllImport("user32.dll")]
+        static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
         public event Action? Clicked;
 
         TaskbarLayout? layout;
-        string text = "";
+        string fullText = "";
+        string compactText = "";
         int textRgb = -1;
         int dpi;
         int height;
         bool hover;
         bool renderedHover;
-        Raster? raster;
+        Raster? full;
+        Raster? compact;
+        Raster? shown;
         Native.RECT placed;
-        bool isPlaced;
 
         public TaskbarLayout? Layout => layout;
 
         public static string Shorten(string name) =>
             name.Length <= MaxNameLength ? name : name.Substring(0, MaxNameLength - 1).TrimEnd() + "…";
 
-        /// <summary>Shows <paramref name="newText"/> on the taskbar; false when that is not possible.</summary>
-        public bool Update(string newText, TaskbarLayout newLayout, bool lightTaskbar)
+        /// <summary>
+        /// Shows the full text where it fits, else the compact text; false when neither fits
+        /// or the taskbar cannot host the window, so the caller can fall back to a tray icon.
+        /// </summary>
+        public bool Update(string newFull, string newCompact, TaskbarLayout newLayout, bool lightTaskbar)
         {
             if (!EnsureWindow(newLayout.Taskbar)) return false;
             layout = newLayout;
 
             int newRgb = lightTaskbar ? 0x000000 : 0xFFFFFF;
-            bool dirty = raster == null || newText != text || newRgb != textRgb || newLayout.Dpi != dpi
-                || newLayout.ClientHeight != height || hover != renderedHover;
-            if (dirty)
+            if (newRgb != textRgb || newLayout.Dpi != dpi || newLayout.ClientHeight != height || hover != renderedHover)
             {
-                text = newText;
                 textRgb = newRgb;
                 dpi = newLayout.Dpi;
                 height = newLayout.ClientHeight;
                 renderedHover = hover;
-                raster = TextRaster.Render(text, StyleFor(lightTaskbar));
+                full = null;
+                compact = null;
+            }
+            if (full == null || newFull != fullText)
+            {
+                fullText = newFull;
+                full = TextRaster.Render(fullText, StyleFor(lightTaskbar));
+            }
+            if (compact == null || newCompact != compactText)
+            {
+                compactText = newCompact;
+                compact = TextRaster.Render(compactText, StyleFor(lightTaskbar));
             }
 
-            var origin = new Native.POINT(newLayout.TrayLeft, newLayout.Bounds.Top);
-            Native.ScreenToClient(newLayout.Taskbar, ref origin);
-            int gap = Native.Scale(4, dpi);
-            int x = Math.Max(0, origin.X - gap - raster!.Width);
-            var target = new Native.RECT { Left = x, Top = 0, Right = x + raster.Width, Bottom = raster.Height };
+            int margin = Native.Scale(4, dpi);
+            int areaLeft = newLayout.Bounds.Left + margin;
+            int areaRight = newLayout.TrayLeft - margin;
+            Raster chosen = full;
+            int? screenX = Placement.Choose(full.Width, areaLeft, areaRight, newLayout.Occupied, margin);
+            if (screenX == null)
+            {
+                chosen = compact;
+                screenX = Placement.Choose(compact.Width, areaLeft, areaRight, newLayout.Occupied, margin);
+            }
+            if (screenX == null)
+            {
+                Conceal();
+                return false;
+            }
 
-            if (dirty || !isPlaced || !SameRect(target, placed))
+            var origin = new Native.POINT(screenX.Value, newLayout.Bounds.Top);
+            Native.ScreenToClient(newLayout.Taskbar, ref origin);
+            var target = new Native.RECT { Left = origin.X, Top = 0, Right = origin.X + chosen.Width, Bottom = chosen.Height };
+            if (!ReferenceEquals(chosen, shown) || !SameRect(target, placed))
             {
                 Native.SetWindowPos(Handle, Native.HWND_TOP, target.Left, target.Top, target.Width, target.Height,
                     Native.SWP_NOACTIVATE | Native.SWP_SHOWWINDOW);
-                Upload();
+                Upload(chosen);
+                shown = chosen;
                 placed = target;
-                isPlaced = true;
             }
             else
             {
@@ -83,19 +114,29 @@ namespace Countdown
         public bool TryGetScreenRect(out Native.RECT rect)
         {
             rect = default;
-            return Handle != IntPtr.Zero && Native.GetWindowRect(Handle, out rect);
+            return Handle != IntPtr.Zero && shown != null && Native.GetWindowRect(Handle, out rect);
         }
 
         public void Detach()
         {
-            if (Handle == IntPtr.Zero) return;
-            if (Native.IsWindow(Handle)) DestroyHandle();
-            else ReleaseHandle();
-            raster = null;
-            isPlaced = false;
+            if (Handle != IntPtr.Zero)
+            {
+                if (Native.IsWindow(Handle)) DestroyHandle();
+                else ReleaseHandle();
+            }
+            full = null;
+            compact = null;
+            shown = null;
         }
 
         public void Dispose() => Detach();
+
+        /// <summary>Hides the window but keeps it, for when nothing fits on a crowded taskbar.</summary>
+        void Conceal()
+        {
+            if (Handle != IntPtr.Zero && shown != null) ShowWindow(Handle, SW_HIDE);
+            shown = null;
+        }
 
         TextRaster.Style StyleFor(bool lightTaskbar) => new TextRaster.Style
         {
@@ -123,7 +164,7 @@ namespace Countdown
             {
                 Caption = Caption,
                 Parent = taskbar,
-                Style = Native.WS_CHILD | Native.WS_VISIBLE | Native.WS_CLIPSIBLINGS,
+                Style = Native.WS_CHILD | Native.WS_CLIPSIBLINGS,
                 ExStyle = Native.WS_EX_LAYERED,
                 X = 0,
                 Y = 0,
@@ -139,15 +180,15 @@ namespace Countdown
                 Log.Write("label: create failed: " + e.Message);
                 return false;
             }
-            raster = null;
-            isPlaced = false;
+            full = null;
+            compact = null;
+            shown = null;
             Log.Write($"label: created 0x{Handle.ToInt64():X} in taskbar 0x{taskbar.ToInt64():X}");
             return Handle != IntPtr.Zero;
         }
 
-        void Upload()
+        void Upload(Raster r)
         {
-            Raster r = raster!;
             IntPtr screen = Native.GetDC(IntPtr.Zero);
             IntPtr dc = Native.CreateCompatibleDC(screen);
             var info = new Native.BITMAPINFO();
@@ -187,9 +228,10 @@ namespace Countdown
 
         void Redraw()
         {
-            if (layout == null || raster == null) return;
-            raster = null; // forces a render with the new hover state
-            Update(text, layout, textRgb == 0x000000);
+            if (layout == null || shown == null) return;
+            full = null; // forces a render with the new hover state
+            compact = null;
+            Update(fullText, compactText, layout, textRgb == 0x000000);
         }
 
         protected override void WndProc(ref Message m)

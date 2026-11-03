@@ -39,7 +39,7 @@ function Save-Shot([string] $Name) {
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
     $graphics.CopyFromScreen($screen.Left, $screen.Top, 0, 0, $bitmap.Size)
     $bitmap.Save((Join-Path $OutDir "$Name.png"), [System.Drawing.Imaging.ImageFormat]::Png)
-    $taskbar = [Win]::FindWindow('Shell_TrayWnd', $null)
+    $taskbar = [Win]::FindWindow('Shell_TrayWnd', [NullString]::Value)
     if ($taskbar -ne [IntPtr]::Zero) {
         $r = New-Object 'Win+RECT'
         [void][Win]::GetWindowRect($taskbar, [ref] $r)
@@ -113,8 +113,10 @@ Set-Countdown 'Trip to Japan' ([datetime]::UtcNow.AddDays(18).AddHours(3).AddMin
 $app = Start-Countdown
 Save-Shot 'countdown'
 [void](Invoke-Cli '--diagnose' 'diagnose-running')
-$taskbar = [Win]::FindWindow('Shell_TrayWnd', $null)
-$label = [Win]::FindWindowEx($taskbar, [IntPtr]::Zero, $null, 'CountdownTaskbarLabel')
+$taskbar = [Win]::FindWindow('Shell_TrayWnd', [NullString]::Value)
+# PowerShell passes $null to a string parameter as "", which FindWindowEx would match
+# literally; [NullString]::Value is a real null.
+$label = [Win]::FindWindowEx($taskbar, [IntPtr]::Zero, [NullString]::Value, 'CountdownTaskbarLabel')
 if ($label -eq [IntPtr]::Zero) {
     Write-Host 'label window not found'
 } else {

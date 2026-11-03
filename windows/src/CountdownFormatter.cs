@@ -22,13 +22,28 @@ namespace Countdown
         {
             long[]? parts = Split(remaining);
             if (parts == null) return "\U0001F389 " + eventName;
+            return TwoUnits(parts) + " · " + eventName;
+        }
+
+        /// <summary>
+        /// The same text without the event name ("18 days, 3 hours", or the party popper), for a
+        /// taskbar too crowded for the full line.
+        /// </summary>
+        public static string TaskbarCompact(double remaining)
+        {
+            long[]? parts = Split(remaining);
+            return parts == null ? "\U0001F389" : TwoUnits(parts);
+        }
+
+        static string TwoUnits(long[] parts)
+        {
             int first = FirstNonZero(parts);
             var labels = new List<string>();
             for (int i = first; i < Math.Min(first + 2, 4); i++)
             {
                 if (parts[i] != 0) labels.Add(Label(parts[i], UnitNames[i]));
             }
-            return string.Join(", ", labels) + " · " + eventName;
+            return string.Join(", ", labels);
         }
 
         /// <summary>

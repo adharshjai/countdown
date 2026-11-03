@@ -58,6 +58,34 @@ namespace Countdown
                 Check($"FullRemaining({Describe(c.remaining)})", CountdownFormatter.FullRemaining(c.remaining), c.expected);
             }
 
+            // Compact taskbar text: the same units without the name.
+            var compactCases = new (double remaining, string expected)[]
+            {
+                (1_566_725, "18 days, 3 hours"),
+                (45, "45 seconds"),
+                (0, "\U0001F389"),
+            };
+            foreach (var c in compactCases)
+            {
+                Check($"TaskbarCompact({Describe(c.remaining)})", CountdownFormatter.TaskbarCompact(c.remaining), c.expected);
+            }
+
+            // Placement on a taskbar whose label area runs from x=10 to x=800 (the tray).
+            var placementCases = new (string note, int width, (int, int)[]? occupied, string expected)[]
+            {
+                ("not scanned yet", 200, null, "600"),
+                ("room beside the tray", 200, new[] { (0, 100), (300, 500) }, "600"),
+                ("tray side crowded, room on the left", 200, new[] { (300, 700) }, "14"),
+                ("picks the widest free stretch", 200, new[] { (200, 230), (480, 700) }, "234"),
+                ("nothing fits", 200, new[] { (0, 790) }, "none"),
+                ("wider than the taskbar", 900, null, "none"),
+            };
+            foreach (var c in placementCases)
+            {
+                int? x = Placement.Choose(c.width, 10, 800, c.occupied, 4);
+                Check($"Placement({c.note})", x.HasValue ? x.Value.ToString(CultureInfo.InvariantCulture) : "none", c.expected);
+            }
+
             // Store validation: blank, missing or mistyped values fall back; good values are
             // kept (name trimmed). The date is a fixed instant that differs from the fallback's.
             const string goodDate = "2027-03-14T15:09:26.0000000Z";

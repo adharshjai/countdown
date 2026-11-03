@@ -167,13 +167,13 @@ namespace Countdown
                 {
                     isEmoji = true;
                 }
-                else if (c == '‍' || c == '️' || c == '⃣')
+                else if (c == (char)0x200D || c == (char)0xFE0F || c == (char)0x20E3)
                 {
                     isEmoji = current.Length > 0 && currentEmoji;
                 }
                 else
                 {
-                    isEmoji = (c >= '⌀' && c <= '⏿') || (c >= '☀' && c <= '➿') || (c >= '⬀' && c <= '⯿');
+                    isEmoji = (c >= (char)0x2300 && c <= (char)0x23FF) || (c >= (char)0x2600 && c <= (char)0x27BF) || (c >= (char)0x2B00 && c <= (char)0x2BFF);
                 }
 
                 if (current.Length > 0 && isEmoji != currentEmoji)

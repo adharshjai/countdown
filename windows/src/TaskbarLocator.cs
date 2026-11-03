@@ -1,11 +1,12 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Windows.Automation;
 using System.Windows.Forms;
 
 namespace Countdown
 {
-    /// <summary>Where the primary taskbar is and where its notification area starts.</summary>
+    /// <summary>Where the primary taskbar is, where its notification area starts, and what it holds.</summary>
     internal sealed class TaskbarLayout
     {
         public IntPtr Taskbar;
@@ -18,6 +19,8 @@ namespace Countdown
         /// <summary>Screen x where the notification area (tray icons and clock) begins.</summary>
         public int TrayLeft;
         public string TraySource = "";
+        /// <summary>Screen x spans of the taskbar's buttons (Start, search, apps); null until scanned.</summary>
+        public IReadOnlyList<(int left, int right)>? Occupied;
     }
 
     internal static class TaskbarLocator
@@ -25,7 +28,7 @@ namespace Countdown
         /// <summary>Notification area width assumed when neither Win32 nor UI Automation finds it.</summary>
         const int EstimatedTrayWidth = 240;
 
-        public static TaskbarLayout? Find(bool synchronousAutomation = false)
+        public static TaskbarLayout? Find(bool synchronousScan = false)
         {
             IntPtr taskbar = Native.FindWindow("Shell_TrayWnd", null);
             if (taskbar == IntPtr.Zero || !Native.GetWindowRect(taskbar, out Native.RECT bounds)) return null;
@@ -42,14 +45,17 @@ namespace Countdown
             var screen = Screen.FromHandle(taskbar).Bounds;
             layout.IsAtTop = bounds.Top <= screen.Top && bounds.Bottom < screen.Bottom;
 
+            TaskbarSnapshot? snapshot = synchronousScan ? TaskbarScan.TryTake(taskbar) : TaskbarScan.Latest(taskbar);
+            layout.Occupied = snapshot?.Occupied;
+
             if (TrayFromWindow(taskbar, bounds, out int left))
             {
                 layout.TrayLeft = left;
                 layout.TraySource = "TrayNotifyWnd";
             }
-            else if (synchronousAutomation ? TryQuery(taskbar, out left) : AutomationTray.TryGetLeft(taskbar, out left))
+            else if (snapshot != null && snapshot.TrayLeft >= 0)
             {
-                layout.TrayLeft = left;
+                layout.TrayLeft = snapshot.TrayLeft;
                 layout.TraySource = "UI Automation";
             }
             else
@@ -61,7 +67,7 @@ namespace Countdown
         }
 
         /// <summary>
-        /// Windows 10 (and the Windows 11 builds that keep it) expose the notification area as
+        /// Windows 10, and the Windows 11 builds that keep it, expose the notification area as
         /// TrayNotifyWnd. Its rectangle is only trusted when it sits in the taskbar's right part.
         /// </summary>
         static bool TrayFromWindow(IntPtr taskbar, Native.RECT bounds, out int left)
@@ -76,85 +82,111 @@ namespace Countdown
             left = r.Left;
             return true;
         }
+    }
 
-        static bool TryQuery(IntPtr taskbar, out int left)
+    /// <summary>One UI Automation pass over the taskbar.</summary>
+    internal sealed class TaskbarSnapshot
+    {
+        public TaskbarSnapshot(IntPtr taskbar, int trayLeft, IReadOnlyList<(int left, int right)> occupied)
         {
-            left = AutomationTray.Query(taskbar);
-            return left >= 0;
+            Taskbar = taskbar;
+            TrayLeft = trayLeft;
+            Occupied = occupied;
         }
+
+        public IntPtr Taskbar { get; }
+        /// <summary>The leftmost Windows 11 notification-area button ("SystemTray.*"), or -1.</summary>
+        public int TrayLeft { get; }
+        /// <summary>Every other visible button and text field: Start, search, widgets, apps.</summary>
+        public IReadOnlyList<(int left, int right)> Occupied { get; }
     }
 
     /// <summary>
-    /// The Windows 11 notification area is XAML, visible only through UI Automation: its buttons
-    /// have class names starting with "SystemTray.". Queried on a pool thread (UI Automation
-    /// must not run on the thread that owns windows inside the taskbar) and cached.
+    /// Scans the taskbar with UI Automation every two seconds on a pool thread and caches the
+    /// result. Windows 11 draws its taskbar in XAML, visible only this way; on Windows 10 it
+    /// sees the same buttons as the window tree. UI Automation must not run on the thread
+    /// that owns a window inside the taskbar, which is why this never runs on the UI thread.
     /// </summary>
-    internal static class AutomationTray
+    internal static class TaskbarScan
     {
+        const double RefreshSeconds = 2;
         static readonly object Gate = new object();
-        static int cachedLeft = -1;
-        static IntPtr cachedFor = IntPtr.Zero;
+        static TaskbarSnapshot? latest;
         static DateTime refreshedUtc = DateTime.MinValue;
         static bool refreshing;
 
-        public static bool TryGetLeft(IntPtr taskbar, out int left)
+        /// <summary>The newest snapshot of this taskbar (null before the first), refreshing if due.</summary>
+        public static TaskbarSnapshot? Latest(IntPtr taskbar)
         {
             lock (Gate)
             {
-                if (!refreshing && (DateTime.UtcNow - refreshedUtc).TotalSeconds >= 3)
+                if (!refreshing && (DateTime.UtcNow - refreshedUtc).TotalSeconds >= RefreshSeconds)
                 {
                     refreshing = true;
                     ThreadPool.QueueUserWorkItem(_ => Refresh(taskbar));
                 }
-                left = cachedLeft;
-                return cachedLeft >= 0 && cachedFor == taskbar;
+                return latest != null && latest.Taskbar == taskbar ? latest : null;
             }
         }
 
         static void Refresh(IntPtr taskbar)
         {
-            int left = -1;
-            try
-            {
-                left = Query(taskbar);
-            }
-            catch (Exception e)
-            {
-                Log.Write("automation: " + e.Message);
-            }
+            TaskbarSnapshot? snapshot = TryTake(taskbar);
             lock (Gate)
             {
-                cachedLeft = left;
-                cachedFor = taskbar;
+                if (snapshot != null) latest = snapshot;
                 refreshedUtc = DateTime.UtcNow;
                 refreshing = false;
             }
         }
 
-        /// <summary>The leftmost "SystemTray.*" button's screen x, or -1.</summary>
-        public static int Query(IntPtr taskbar)
+        public static TaskbarSnapshot? TryTake(IntPtr taskbar)
+        {
+            try
+            {
+                return Take(taskbar);
+            }
+            catch (Exception e)
+            {
+                Log.Write("scan failed: " + e.Message);
+                return null;
+            }
+        }
+
+        static TaskbarSnapshot Take(IntPtr taskbar)
         {
             AutomationElement root = AutomationElement.FromHandle(taskbar);
-            var buttons = root.FindAll(TreeScope.Descendants,
-                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button));
-            double best = double.MaxValue;
-            foreach (AutomationElement button in buttons)
+            var condition = new OrCondition(
+                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button),
+                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Edit));
+            int trayLeft = -1;
+            var occupied = new List<(int left, int right)>();
+            foreach (AutomationElement element in root.FindAll(TreeScope.Descendants, condition))
             {
-                string className;
-                System.Windows.Rect rect;
+                string className, name;
+                System.Windows.Rect r;
                 try
                 {
-                    className = button.Current.ClassName ?? "";
-                    rect = button.Current.BoundingRectangle;
+                    if (element.Current.IsOffscreen) continue;
+                    className = element.Current.ClassName ?? "";
+                    name = element.Current.Name ?? "";
+                    r = element.Current.BoundingRectangle;
                 }
                 catch (ElementNotAvailableException)
                 {
                     continue;
                 }
-                if (!className.StartsWith("SystemTray.", StringComparison.Ordinal) || rect.IsEmpty || rect.Width <= 0) continue;
-                best = Math.Min(best, rect.Left);
+                if (r.IsEmpty || r.Width <= 0 || r.Height <= 0) continue;
+                if (className.StartsWith("SystemTray.", StringComparison.Ordinal))
+                {
+                    int left = (int)Math.Floor(r.Left);
+                    trayLeft = trayLeft < 0 ? left : Math.Min(trayLeft, left);
+                    continue;
+                }
+                if (name == TaskbarLabel.Caption) continue;
+                occupied.Add(((int)Math.Floor(r.Left), (int)Math.Ceiling(r.Right)));
             }
-            return best == double.MaxValue ? -1 : (int)Math.Round(best);
+            return new TaskbarSnapshot(taskbar, trayLeft, occupied);
         }
     }
 }

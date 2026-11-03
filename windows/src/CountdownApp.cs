@@ -93,19 +93,21 @@ namespace Countdown
                 Theme.MatchMenusToTaskbar();
             }
 
-            string title = CountdownFormatter.TaskbarTitle(Clock.SecondsUntil(target.WhenUtc), TaskbarLabel.Shorten(target.Name));
+            double remaining = Clock.SecondsUntil(target.WhenUtc);
+            string title = CountdownFormatter.TaskbarTitle(remaining, TaskbarLabel.Shorten(target.Name));
             bool onTaskbar = false;
             TaskbarLayout? layout = TaskbarLocator.Find();
             if (layout != null && layout.IsHorizontal)
             {
-                onTaskbar = label.Update(title, layout, light);
+                onTaskbar = label.Update(title, CountdownFormatter.TaskbarCompact(remaining), layout, light);
             }
             else
             {
                 label.Detach();
             }
 
-            // The notification-area icon is only a fallback: a vertical taskbar, or no taskbar.
+            // The notification-area icon is only a fallback: no taskbar, a vertical one, or one
+            // too crowded for even the compact text.
             if (!onTaskbar) tray.Text = Truncate(title, 63);
             if (tray.Visible == onTaskbar) tray.Visible = !onTaskbar;
 

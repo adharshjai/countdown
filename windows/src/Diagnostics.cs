@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Windows.Automation;
 
 namespace Countdown
@@ -29,33 +30,39 @@ namespace Countdown
             try
             {
                 var all = AutomationElement.FromHandle(taskbar).FindAll(TreeScope.Descendants, Condition.TrueCondition);
-                o.WriteLine($"UI Automation: {all.Count} elements; those in the right half:");
-                double middle = bounds.Left + bounds.Width / 2.0;
+                o.WriteLine($"UI Automation: {all.Count} elements");
                 foreach (AutomationElement element in all)
                 {
                     try
                     {
                         var r = element.Current.BoundingRectangle;
-                        if (r.IsEmpty || r.Left < middle) continue;
+                        if (r.IsEmpty) continue;
+                        string name = (element.Current.Name ?? "").Replace("\r", " ").Replace("\n", " ");
                         o.WriteLine($"  {element.Current.ControlType.ProgrammaticName} class=\"{element.Current.ClassName}\" " +
-                            $"name=\"{element.Current.Name}\" [{r.Left:0},{r.Top:0} {r.Width:0}x{r.Height:0}]");
+                            $"name=\"{name}\" [{r.Left:0},{r.Top:0} {r.Width:0}x{r.Height:0}] offscreen={element.Current.IsOffscreen}");
                     }
                     catch (ElementNotAvailableException)
                     {
                     }
                 }
-                o.WriteLine($"UI Automation tray left: {AutomationTray.Query(taskbar)}");
             }
             catch (Exception e)
             {
                 o.WriteLine("UI Automation failed: " + e.Message);
             }
 
-            TaskbarLayout? layout = TaskbarLocator.Find(synchronousAutomation: true);
+            TaskbarLayout? layout = TaskbarLocator.Find(synchronousScan: true);
             if (layout != null)
             {
                 o.WriteLine($"Layout: tray left {layout.TrayLeft} from {layout.TraySource}, horizontal {layout.IsHorizontal}, " +
                     $"top {layout.IsAtTop}, client height {layout.ClientHeight}");
+                if (layout.Occupied != null)
+                {
+                    int margin = Native.Scale(4, layout.Dpi);
+                    var free = Placement.FreeStretches(layout.Bounds.Left + margin, layout.TrayLeft - margin, layout.Occupied);
+                    o.WriteLine("  buttons: " + string.Join(" ", layout.Occupied.OrderBy(s => s.left).Select(s => $"{s.left}-{s.right}")));
+                    o.WriteLine("  free:    " + string.Join(" ", free.Select(s => $"{s.left}-{s.right}")));
+                }
             }
 
             IntPtr label = Native.FindWindowEx(taskbar, IntPtr.Zero, null, TaskbarLabel.Caption);
