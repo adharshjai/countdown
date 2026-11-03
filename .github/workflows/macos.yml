@@ -1,0 +1,31 @@
+name: macOS
+
+on:
+  push:
+    paths:
+      - 'macos/**'
+      - '.github/workflows/macos.yml'
+  pull_request:
+    paths:
+      - 'macos/**'
+      - '.github/workflows/macos.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build and self-check
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build (runs the self-check)
+        run: bash macos/build.sh
+
+      - name: Package
+        run: ditto -c -k --keepParent macos/build/Countdown.app macos/build/Countdown-macOS.zip
+
+      - name: Upload the app
+        uses: actions/upload-artifact@v4
+        with:
+          name: Countdown-macOS
+          path: macos/build/Countdown-macOS.zip
