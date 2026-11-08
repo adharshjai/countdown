@@ -32,6 +32,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var loginItemStatus: SMAppService.Status = .notRegistered
     /// True while a Launch at Login change is in flight; the item is disabled meanwhile.
     private var loginItemBusy = false
+    /// Bumped when a Launch at Login change starts and when it ends, so a status read that
+    /// began before the change cannot land after it and put the old checkmark back.
+    private var loginItemGeneration = 0
 
     /// "Thursday, January 1, 2027 at 12:00 AM"
     private let dateFormatter: DateFormatter = {
@@ -188,10 +191,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Reads the login-item state off the main thread, so a slow system service can never
     /// freeze the menu, then shows it.
     private func refreshLoginItemStatus() {
+        let generation = loginItemGeneration
         Task.detached(priority: .userInitiated) {
             let status = SMAppService.mainApp.status
             await MainActor.run { [weak self] in
-                guard let self, !self.loginItemBusy else { return }
+                guard let self, !self.loginItemBusy, generation == self.loginItemGeneration else { return }
                 self.loginItemStatus = status
                 self.updateLaunchAtLoginItem()
             }
@@ -227,6 +231,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let enable = loginItemStatus != .enabled
         loginItemBusy = true
+        loginItemGeneration += 1
         updateLaunchAtLoginItem()
         Task.detached(priority: .userInitiated) {
             let failure: String?
@@ -249,6 +254,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func finishLoginItemChange(enable: Bool, status: SMAppService.Status, failure: String?) {
         loginItemBusy = false
+        loginItemGeneration += 1
         loginItemStatus = status
         updateLaunchAtLoginItem()
 

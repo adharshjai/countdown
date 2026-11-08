@@ -2,24 +2,32 @@ import AppKit
 import SwiftUI
 
 /// The form's values. Owned by the window controller so `show` can repopulate them; the
-/// SwiftUI view only binds to them.
+/// SwiftUI view reads them.
 @MainActor
 final class SettingsModel: ObservableObject {
     @Published var eventName = ""
     @Published var target = Date()
-    /// Bumped by `show` so the view moves focus to the name field every time the window opens.
-    @Published var focusToken = 0
+}
+
+/// The event name field. It is an AppKit text field because the window has to focus it with
+/// the whole name selected the moment it opens, so typing replaces the name. SwiftUI's
+/// TextField can only be focused, which leaves the cursor after the name. The window
+/// controller owns the field and keeps the model in step with it.
+struct NameField: NSViewRepresentable {
+    let field: NSTextField
+
+    func makeNSView(context: Context) -> NSTextField { field }
+    func updateNSView(_ nsView: NSTextField, context: Context) {}
 }
 
 /// "Set Countdown": a live preview of the menu bar text, the event name, a calendar with a
-/// time field, Cancel / Save.
+/// clock, Cancel / Save.
 @MainActor
 struct SettingsView: View {
     @ObservedObject var model: SettingsModel
+    let nameField: NSTextField
     let onCancel: () -> Void
     let onSave: () -> Void
-
-    @FocusState private var nameFocused: Bool
 
     private var trimmedName: String {
         model.eventName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -30,10 +38,8 @@ struct SettingsView: View {
             preview
 
             field("Event") {
-                TextField("Trip to Japan", text: $model.eventName)
-                    .textFieldStyle(.roundedBorder)
-                    .focused($nameFocused)
-                    .onSubmit { if !trimmedName.isEmpty { onSave() } }
+                NameField(field: nameField)
+                    .frame(maxWidth: .infinity)
             }
 
             field("Date and time") {
@@ -57,8 +63,6 @@ struct SettingsView: View {
         }
         .padding(24)
         .frame(width: 360)
-        .onAppear { nameFocused = true }
-        .onChange(of: model.focusToken) { _, _ in nameFocused = true }
     }
 
     /// Exactly what the menu bar will say, ticking once a second like the real thing, drawn
@@ -92,10 +96,25 @@ struct SettingsView: View {
 /// Hosts `SettingsView` in a fixed-size window that is built once, kept alive
 /// (`isReleasedWhenClosed = false`) and repopulated by `show`.
 @MainActor
-final class SettingsWindowController: NSWindowController, NSWindowDelegate {
+final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTextFieldDelegate {
     var onSave: (Countdown) -> Void = { _ in }
 
     private let model = SettingsModel()
+
+    private let nameField: NSTextField = {
+        let field = NSTextField()
+        field.placeholderString = "Trip to Japan"
+        field.bezelStyle = .roundedBezel
+        field.font = .systemFont(ofSize: NSFont.systemFontSize)
+        field.usesSingleLineMode = true
+        field.lineBreakMode = .byTruncatingTail
+        field.cell?.isScrollable = true
+        field.cell?.wraps = false
+        // Return saves through the field's action; leaving the field must not.
+        (field.cell as? NSTextFieldCell)?.sendsActionOnEndEditing = false
+        field.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        return field
+    }()
 
     init() {
         let window = NSWindow(
@@ -110,8 +129,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         super.init(window: window)
         window.delegate = self
 
+        nameField.delegate = self
+        nameField.target = self
+        nameField.action = #selector(nameFieldReturned)
+
         let hosting = NSHostingController(rootView: SettingsView(
             model: model,
+            nameField: nameField,
             onCancel: { [weak self] in self?.close() },
             onSave: { [weak self] in self?.save() }
         ))
@@ -121,6 +145,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         if size.width > 0, size.height > 0 {
             window.setContentSize(size)
         }
+        window.initialFirstResponder = nameField
     }
 
     @available(*, unavailable)
@@ -138,35 +163,47 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     func show(_ countdown: Countdown) {
         model.eventName = countdown.eventName
         model.target = countdown.target
-        model.focusToken += 1
+        nameField.stringValue = countdown.eventName
         NSApp.unhide(nil)
         NSApp.activate(ignoringOtherApps: true)
         window?.center()
         showWindow(nil)
         window?.orderFrontRegardless()
-        selectNameWhenFocused()
+        focusName()
     }
 
-    /// SwiftUI focuses the name field a moment after the window appears and leaves the cursor
-    /// at the end, so typing would add to the old name. Once the field's editor is up, select
-    /// the whole name, as an AppKit field does when you tab into it. Gives up after half a second.
-    private func selectNameWhenFocused(attempt: Int = 0) {
+    /// Focuses the name field with the whole name selected, as AppKit does when you tab into a
+    /// field, so typing replaces the name. On the first show SwiftUI puts the field into the
+    /// window during its first layout pass, so this waits for that, for up to half a second.
+    private func focusName(attempt: Int = 0) {
         guard let window, window.isVisible else { return }
-        if let editor = window.firstResponder as? NSTextView, editor.isFieldEditor {
-            editor.selectAll(nil)
+        if nameField.window === window {
+            nameField.selectText(nil)
             return
         }
         guard attempt < 20 else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) { [weak self] in
             MainActor.assumeIsolated {
-                self?.selectNameWhenFocused(attempt: attempt + 1)
+                self?.focusName(attempt: attempt + 1)
             }
         }
     }
 
+    // MARK: - NSTextFieldDelegate
+
+    /// Keeps the model, and with it the preview and the Save button, in step with typing.
+    func controlTextDidChange(_ obj: Notification) {
+        model.eventName = nameField.stringValue
+    }
+
     // MARK: - Actions
 
+    @objc private func nameFieldReturned() {
+        save()
+    }
+
     private func save() {
+        guard window?.isVisible == true else { return }   // Return can reach both the field and Save
         let name = model.eventName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
         onSave(Countdown(eventName: name, target: model.target))
