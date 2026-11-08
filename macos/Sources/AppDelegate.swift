@@ -276,13 +276,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// Shows an alert where it cannot be missed. Since macOS 14 an app may not get to come
-    /// forward on its own, and a menu bar app's modal alert could open behind other apps'
-    /// windows, leaving Countdown waiting for a click nobody can see. A floating alert stays
-    /// on top of every normal window.
+    /// Shows an alert where it cannot be missed. A menu bar app is often not the active app,
+    /// and its modal alert could open behind other apps' windows, leaving Countdown waiting
+    /// for a click nobody can see. A floating alert stays on top of every normal window.
     @discardableResult
     private func present(_ alert: NSAlert) -> NSApplication.ModalResponse {
-        NSApp.activate()
+        NSApp.activate(ignoringOtherApps: true)
         alert.window.level = .floating
         return alert.runModal()
     }

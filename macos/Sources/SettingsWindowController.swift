@@ -131,14 +131,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     // MARK: - Showing
 
     /// Populates the form from `countdown` and brings the window to the front. The app is an
-    /// LSUIElement, so it asks to activate first; since macOS 14 that request can be turned
-    /// down, so the window is also ordered front regardless rather than opening behind others.
+    /// LSUIElement, so it must activate itself or the window opens inactive behind others.
+    /// macOS 14's cooperative `activate()` leaves a menu bar app that has just launched in the
+    /// background (keystrokes then go to the previous app), so this uses the older call, which
+    /// still brings it forward, and also orders the window front regardless.
     func show(_ countdown: Countdown) {
         model.eventName = countdown.eventName
         model.target = countdown.target
         model.focusToken += 1
         NSApp.unhide(nil)
-        NSApp.activate()
+        NSApp.activate(ignoringOtherApps: true)
         window?.center()
         showWindow(nil)
         window?.orderFrontRegardless()

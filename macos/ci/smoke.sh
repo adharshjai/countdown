@@ -25,12 +25,13 @@ keys() { osascript -e "tell application \"System Events\" to $1" >/dev/null 2>&1
 saved_name() { defaults read "$BUNDLE" eventName 2>/dev/null; }
 
 # Opening the status item's menu and reading its items back goes through the app's main
-# thread, so it doubles as the check that the app is responding.
+# thread, so it doubles as the check that the app is responding. The status item is the
+# app's last menu bar: the first is its (hidden) main menu.
 open_menu() {
-    (ax 'click menu bar item 1 of menu bar 1' >/dev/null) &
+    (ax 'click menu bar item 1 of last menu bar' >/dev/null) &
     sleep 2
     local items
-    items=$(ax 'get name of every menu item of menu 1 of menu bar item 1 of menu bar 1')
+    items=$(ax 'get name of every menu item of menu 1 of menu bar item 1 of last menu bar')
     echo "menu: $items" >> "$OUT/steps.txt"
     case "$items" in
         *"Set Countdown"*) return 0 ;;
@@ -39,7 +40,7 @@ open_menu() {
 }
 
 choose() {
-    (ax "click menu item \"$1\" of menu 1 of menu bar item 1 of menu bar 1" >/dev/null) &
+    (ax "click menu item \"$1\" of menu 1 of menu bar item 1 of last menu bar" >/dev/null) &
     sleep 3
 }
 
