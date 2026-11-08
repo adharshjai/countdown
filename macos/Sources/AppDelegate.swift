@@ -27,6 +27,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let remainingItem = NSMenuItem()
     private let launchAtLoginItem = NSMenuItem()
 
+    /// The login-item state as last read from macOS. Reading it is a round trip to a system
+    /// service that can stall, so it is refreshed off the main thread and the menu shows this.
+    private var loginItemStatus: SMAppService.Status = .notRegistered
+    /// True while a Launch at Login change is in flight; the item is disabled meanwhile.
+    private var loginItemBusy = false
+
     /// "Thursday, January 1, 2027 at 12:00 AM"
     private let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -38,6 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - NSApplicationDelegate
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.mainMenu = Self.makeMainMenu()
         let (loaded, usedFallback) = CountdownStore.load()
         countdown = loaded
 
@@ -69,6 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         tick()
         scheduleNextTick()
         installObservers()
+        refreshLoginItemStatus()
 
         // Nothing saved yet: show the default countdown and ask for the person's own event.
         if usedFallback { showSettings() }
@@ -163,19 +171,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - NSMenuDelegate
 
-    /// The figures are refreshed every time the menu opens; the checkmark is re-read because
-    /// System Settings › Login Items can change it behind the app's back. A dash means macOS
-    /// has the item but is still waiting for the person's approval.
+    /// The figures are refreshed every time the menu opens. The checkmark shows the cached
+    /// login-item state at once and is re-read in the background, because System Settings ›
+    /// Login Items can change it behind the app's back; an open menu updates when it arrives.
     func menuWillOpen(_ menu: NSMenu) {
         let bold = NSFont.boldSystemFont(ofSize: NSFont.menuFont(ofSize: 0).pointSize)
         nameItem.attributedTitle = NSAttributedString(string: countdown.eventName, attributes: [.font: bold])
         dateItem.title = dateFormatter.string(from: countdown.target)
         remainingItem.title = CountdownFormatter.fullRemaining(remaining: remainingNow())
-        switch SMAppService.mainApp.status {
+        updateLaunchAtLoginItem()
+        refreshLoginItemStatus()
+    }
+
+    // MARK: - Launch at Login
+
+    /// Reads the login-item state off the main thread, so a slow system service can never
+    /// freeze the menu, then shows it.
+    private func refreshLoginItemStatus() {
+        Task.detached(priority: .userInitiated) {
+            let status = SMAppService.mainApp.status
+            await MainActor.run { [weak self] in
+                guard let self, !self.loginItemBusy else { return }
+                self.loginItemStatus = status
+                self.updateLaunchAtLoginItem()
+            }
+        }
+    }
+
+    /// A checkmark when on, a dash while macOS waits for the person's approval.
+    private func updateLaunchAtLoginItem() {
+        switch loginItemStatus {
         case .enabled: launchAtLoginItem.state = .on
         case .requiresApproval: launchAtLoginItem.state = .mixed
         default: launchAtLoginItem.state = .off
         }
+        launchAtLoginItem.isEnabled = !loginItemBusy
     }
 
     // MARK: - Actions
@@ -184,39 +214,110 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settings.show(countdown)
     }
 
+    /// Registering and unregistering also wait on a system service, so they run in the
+    /// background too; the item is disabled until the result is back.
     @objc private func toggleLaunchAtLogin() {
-        let service = SMAppService.mainApp
+        guard !loginItemBusy else { return }
 
         // Already registered, waiting for approval: the only useful move is System Settings.
-        if service.status == .requiresApproval {
+        if loginItemStatus == .requiresApproval {
             SMAppService.openSystemSettingsLoginItems()
             return
         }
 
-        do {
-            if service.status == .enabled {
-                try service.unregister()
-            } else {
-                try service.register()
+        let enable = loginItemStatus != .enabled
+        loginItemBusy = true
+        updateLaunchAtLoginItem()
+        Task.detached(priority: .userInitiated) {
+            let failure: String?
+            do {
+                if enable {
+                    try SMAppService.mainApp.register()
+                } else {
+                    try await SMAppService.mainApp.unregister()
+                }
+                failure = nil
+            } catch {
+                failure = error.localizedDescription
             }
-        } catch {
-            NSApp.activate(ignoringOtherApps: true)
-            NSAlert(error: error).runModal()
+            let status = SMAppService.mainApp.status
+            await MainActor.run { [weak self] in
+                self?.finishLoginItemChange(enable: enable, status: status, failure: failure)
+            }
+        }
+    }
+
+    private func finishLoginItemChange(enable: Bool, status: SMAppService.Status, failure: String?) {
+        loginItemBusy = false
+        loginItemStatus = status
+        updateLaunchAtLoginItem()
+
+        if let failure {
+            let alert = NSAlert()
+            alert.messageText = enable
+                ? "Countdown couldn't turn on Launch at Login"
+                : "Countdown couldn't turn off Launch at Login"
+            alert.informativeText = failure
+            present(alert)
             return
         }
 
         // macOS registered the item but is waiting for the person to approve it.
-        if service.status == .requiresApproval {
-            NSApp.activate(ignoringOtherApps: true)
+        if enable && status == .requiresApproval {
             let alert = NSAlert()
             alert.messageText = "Approve Countdown under System Settings › Login Items"
             alert.informativeText = "macOS needs your approval before Countdown can launch at login."
             alert.addButton(withTitle: "Open Login Items")
             let later = alert.addButton(withTitle: "Not Now")
             later.keyEquivalent = "\u{1b}"
-            if alert.runModal() == .alertFirstButtonReturn {
+            if present(alert) == .alertFirstButtonReturn {
                 SMAppService.openSystemSettingsLoginItems()
             }
         }
+    }
+
+    /// Shows an alert where it cannot be missed. Since macOS 14 an app may not get to come
+    /// forward on its own, and a menu bar app's modal alert could open behind other apps'
+    /// windows, leaving Countdown waiting for a click nobody can see. A floating alert stays
+    /// on top of every normal window.
+    @discardableResult
+    private func present(_ alert: NSAlert) -> NSApplication.ModalResponse {
+        NSApp.activate()
+        alert.window.level = .floating
+        return alert.runModal()
+    }
+
+    // MARK: - Main menu
+
+    /// A menu bar app shows no menu bar, but AppKit still routes Cmd-A, -C, -V, -X and -Z
+    /// through the main menu: without an Edit menu, text fields lose those shortcuts.
+    private static func makeMainMenu() -> NSMenu {
+        let main = NSMenu()
+
+        let appMenu = NSMenu(title: "Countdown")
+        appMenu.addItem(withTitle: "Quit Countdown", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        let appItem = NSMenuItem()
+        appItem.submenu = appMenu
+        main.addItem(appItem)
+
+        let edit = NSMenu(title: "Edit")
+        edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        let redo = edit.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        edit.addItem(.separator())
+        edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        let editItem = NSMenuItem()
+        editItem.submenu = edit
+        main.addItem(editItem)
+
+        let windowMenu = NSMenu(title: "Window")
+        windowMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        let windowItem = NSMenuItem()
+        windowItem.submenu = windowMenu
+        main.addItem(windowItem)
+        return main
     }
 }

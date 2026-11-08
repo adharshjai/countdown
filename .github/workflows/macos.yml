@@ -13,19 +13,32 @@ on:
 
 jobs:
   build:
-    name: Build and self-check
-    runs-on: macos-15
+    name: Build and UI test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-26]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
       - name: Build (runs the self-check)
         run: bash macos/build.sh
 
+      - name: UI test
+        run: bash macos/ci/smoke.sh macos/build/Countdown.app macos/build/smoke
+
       - name: Package
+        if: always()
         run: ditto -c -k --keepParent macos/build/Countdown.app macos/build/Countdown-macOS.zip
 
-      - name: Upload the app
+      - name: Upload the app and test results
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Countdown-macOS
-          path: macos/build/Countdown-macOS.zip
+          name: Countdown-macOS-${{ matrix.os }}
+          path: |
+            macos/build/Countdown-macOS.zip
+            macos/build/smoke/
+          if-no-files-found: warn

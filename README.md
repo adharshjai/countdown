@@ -13,7 +13,7 @@ A small countdown that lives in the macOS menu bar or the Windows taskbar:
 
 ## macOS
 
-Requires macOS 14 or later.
+Requires macOS 14 or later, on Apple silicon or Intel.
 
 1. Download `Countdown-macOS.zip` from [Releases](../../releases), unzip it, and move
    `Countdown.app` wherever you like.
@@ -28,8 +28,9 @@ Build it yourself with the Xcode command line tools:
 bash macos/build.sh
 ```
 
-The app lands in `macos/build/Countdown.app`. The build script also runs the app's
-self-check, `Countdown --check`, which tests the text formatting.
+The app lands in `macos/build/Countdown.app`, built for both Apple silicon and Intel. The
+build script also runs the app's self-check, `Countdown --check`, which tests the text
+formatting. On GitHub, CI also drives the app's settings window and menu on macOS 15 and 26.
 
 ## Windows
 

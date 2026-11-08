@@ -131,15 +131,35 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     // MARK: - Showing
 
     /// Populates the form from `countdown` and brings the window to the front. The app is an
-    /// LSUIElement, so it must activate itself first or the window would open behind others.
+    /// LSUIElement, so it asks to activate first; since macOS 14 that request can be turned
+    /// down, so the window is also ordered front regardless rather than opening behind others.
     func show(_ countdown: Countdown) {
         model.eventName = countdown.eventName
         model.target = countdown.target
         model.focusToken += 1
         NSApp.unhide(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp.activate()
         window?.center()
         showWindow(nil)
+        window?.orderFrontRegardless()
+        selectNameWhenFocused()
+    }
+
+    /// SwiftUI focuses the name field a moment after the window appears and leaves the cursor
+    /// at the end, so typing would add to the old name. Once the field's editor is up, select
+    /// the whole name, as an AppKit field does when you tab into it. Gives up after half a second.
+    private func selectNameWhenFocused(attempt: Int = 0) {
+        guard let window, window.isVisible else { return }
+        if let editor = window.firstResponder as? NSTextView, editor.isFieldEditor {
+            editor.selectAll(nil)
+            return
+        }
+        guard attempt < 20 else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) { [weak self] in
+            MainActor.assumeIsolated {
+                self?.selectNameWhenFocused(attempt: attempt + 1)
+            }
+        }
     }
 
     // MARK: - Actions
