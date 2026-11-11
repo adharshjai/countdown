@@ -15,6 +15,9 @@ lipo -create build/Countdown-arm64 build/Countdown-x86_64 -output "$APP/Contents
 rm -f build/Countdown-arm64 build/Countdown-x86_64
 
 cp "Info.plist" "$APP/Contents/Info.plist"
+# The app icon, drawn by tools/make-icon.swift.
+mkdir -p "$APP/Contents/Resources"
+cp "Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 codesign --force --deep --sign - "$APP"
 

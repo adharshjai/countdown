@@ -15,14 +15,14 @@ A small countdown that lives in the macOS menu bar or the Windows taskbar:
 
 Requires macOS 14 or later, on Apple silicon or Intel.
 
-1. Download `Countdown-macOS.zip` from [Releases](../../releases), unzip it, and move
-   `Countdown.app` wherever you like.
-2. The app is not notarized, so the first open needs a confirmation: open it once, then
-   allow it under **System Settings › Privacy & Security** ("Open Anyway").
-3. Click the countdown in the menu bar and choose **Set Countdown…** to pick your event.
+1. Download `Countdown.dmg` from [Releases](../../releases) and open it.
+2. In the window that opens, drag Countdown onto the Applications folder.
+3. Open Countdown from Applications. The app is not notarized, so the first open needs a
+   confirmation: allow it under **System Settings › Privacy & Security** ("Open Anyway").
+4. Click the countdown in the menu bar and choose **Set Countdown…** to pick your event.
    **Launch at Login** in the same menu starts it with your Mac.
 
-Build it yourself with the Xcode command line tools:
+Build it yourself with Xcode or its command line tools:
 
 ```bash
 bash macos/build.sh
@@ -30,7 +30,16 @@ bash macos/build.sh
 
 The app lands in `macos/build/Countdown.app`, built for both Apple silicon and Intel. The
 build script also runs the app's self-check, `Countdown --check`, which tests the text
-formatting. On GitHub, CI also drives the app's settings window and menu on macOS 15 and 26.
+formatting. To package it as the disk image, install [dmgbuild](https://github.com/dmgbuild/dmgbuild)
+and run:
+
+```bash
+bash macos/make-dmg.sh
+```
+
+That writes `macos/build/Countdown.dmg`. The app icon and the disk image background are
+drawn by the scripts in `macos/tools`. On GitHub, CI also drives the app's settings window and
+menu on macOS 15 and 26, installs it from the disk image, and screenshots the disk image window.
 
 ## Windows
 

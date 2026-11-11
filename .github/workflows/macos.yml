@@ -29,16 +29,21 @@ jobs:
       - name: UI test
         run: bash macos/ci/smoke.sh macos/build/Countdown.app macos/build/smoke
 
-      - name: Package
-        if: always()
-        run: ditto -c -k --keepParent macos/build/Countdown.app macos/build/Countdown-macOS.zip
+      - name: Disk image
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet "dmgbuild>=1.6,<2"
+          PATH="$RUNNER_TEMP/venv/bin:$PATH" bash macos/make-dmg.sh
 
-      - name: Upload the app and test results
+      - name: Disk image check and screenshots
+        run: bash macos/ci/dmg-check.sh macos/build/Countdown.dmg macos/build/smoke
+
+      - name: Upload the disk image and test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: Countdown-macOS-${{ matrix.os }}
           path: |
-            macos/build/Countdown-macOS.zip
+            macos/build/Countdown.dmg
             macos/build/smoke/
           if-no-files-found: warn
