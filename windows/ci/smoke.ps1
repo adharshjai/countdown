@@ -240,12 +240,12 @@ function Test-LabelUp {
     return ([Win]::GetWindow($handle, 3) -eq [IntPtr]::Zero)
 }
 
-# Reveals an auto-hidden taskbar: first with the pointer at the bottom edge, as a person does,
-# then with Win+T. Returns how, or $null when this machine would not show it.
-function Show-HiddenTaskbar {
-    [void][Win]::SetCursorPos(400, $screenHeight - 30)
+# Reveals an auto-hidden taskbar: first with the pointer at the bottom edge at x, as a person
+# does, then with Win+T. Returns how, or $null when this machine would not show it.
+function Show-HiddenTaskbar([int] $X) {
+    [void][Win]::SetCursorPos($X, $screenHeight - 30)
     Start-Sleep -Milliseconds 50
-    [void][Win]::SetCursorPos(400, $screenHeight - 1)
+    [void][Win]::SetCursorPos($X, $screenHeight - 1)
     if ((Wait-Until { Test-TaskbarShown } 2500) -ge 0) { return 'pointer' }
     [Win]::keybd_event(0x5B, 0, 0, [UIntPtr]::Zero)
     [Win]::keybd_event(0x54, 0, 0, [UIntPtr]::Zero)
@@ -260,8 +260,15 @@ Set-AutoHide $true
 [void][Win]::SetCursorPos(400, 300)
 if ((Wait-Until { -not (Test-TaskbarShown) } 5000) -lt 0) { Write-Host 'note: the taskbar did not hide' }
 Save-Shot 'autohide-hidden'
-for ($i = 1; $i -le 3; $i++) {
-    $how = Show-HiddenTaskbar
+# Reveals 2 and 3 hover right over the label's sliver of the hidden taskbar, which must not stop
+# the taskbar from popping up; reveals 1 and 4 hover elsewhere, for comparison.
+$hidden = Get-LabelRect
+$overLabel = [int](($hidden.Left + $hidden.Right) / 2)
+$revealX = @(0, 400, $overLabel, $overLabel, 400)
+$revealedBy = @{}
+for ($i = 1; $i -le 4; $i++) {
+    $how = Show-HiddenTaskbar $revealX[$i]
+    $revealedBy[$i] = $how
     if ($null -eq $how) {
         Write-Host "reveal ${i}: this machine would not reveal the taskbar; skipped"
     } else {
@@ -279,6 +286,9 @@ for ($i = 1; $i -le 3; $i++) {
     [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
     [void][Win]::SetCursorPos(400, 300)
     [void](Wait-Until { -not (Test-TaskbarShown) } 5000)
+}
+if ($revealedBy[4] -eq 'pointer' -and $revealedBy[2] -ne 'pointer' -and $revealedBy[3] -ne 'pointer') {
+    Fail "hovering over the label's sliver did not reveal the taskbar, while hovering elsewhere did"
 }
 Set-AutoHide $false
 Start-Sleep -Seconds 4

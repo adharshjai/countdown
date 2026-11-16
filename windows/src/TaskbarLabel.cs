@@ -53,6 +53,7 @@ namespace Countdown
         Raster? compact;
         Raster? shown;
         bool shownCompact;
+        bool clickThrough;
         Native.RECT placed;
 
         public TaskbarLayout? Layout => layout;
@@ -78,6 +79,20 @@ namespace Countdown
         {
             if (!EnsureWindow(newLayout.Taskbar)) return LabelState.Unavailable;
             layout = newLayout;
+
+            if (newLayout.IsHidden && shown != null)
+            {
+                // The taskbar has slid away (auto-hide) or is sliding. The label is its child and
+                // moves with it, so leave it exactly as it is: the buttons cannot be measured now,
+                // and a new, wider text could reach over a button when the taskbar comes back. It
+                // is laid out afresh once the taskbar is up. Meanwhile let the pointer through, so
+                // the label's sliver of the hidden taskbar never stops it from popping up.
+                SetClickThrough(true);
+                BringToFront();
+                return LabelState.Shown;
+            }
+            SetClickThrough(false);
+
             int newRgb = lightTaskbar ? 0x000000 : 0xFFFFFF;
             if (newRgb != textRgb || newLayout.Dpi != dpi || newLayout.ClientHeight != height || hover != renderedHover)
             {
@@ -99,38 +114,25 @@ namespace Countdown
                 compact = TextRaster.Render(compactText, StyleFor(lightTaskbar));
             }
 
-            Raster chosen;
-            int clientX;
-            if (newLayout.IsHidden && shown != null)
+            if (newLayout.Occupied == null)
             {
-                // The taskbar has slid away (auto-hide) or is sliding. The label is its child and
-                // moves with it, so keep it exactly where it is: the buttons cannot be measured
-                // now, and moving it would make it reappear in the wrong place.
-                chosen = shownCompact ? compact : full;
-                clientX = placed.Left;
+                // Until the first scan says where the buttons are, any spot could cover one.
+                Conceal();
+                return LabelState.NotReady;
             }
-            else
+            int margin = Native.Scale(4, dpi);
+            var choice = Placement.Choose(full.Width, compact.Width, newLayout.Bounds.Left + margin,
+                newLayout.TrayLeft - margin, newLayout.Occupied, margin);
+            if (choice == null)
             {
-                if (newLayout.Occupied == null)
-                {
-                    // Until the first scan says where the buttons are, any spot could cover one.
-                    Conceal();
-                    return LabelState.NotReady;
-                }
-                int margin = Native.Scale(4, dpi);
-                var choice = Placement.Choose(full.Width, compact.Width, newLayout.Bounds.Left + margin,
-                    newLayout.TrayLeft - margin, newLayout.Occupied, margin);
-                if (choice == null)
-                {
-                    Conceal();
-                    return LabelState.NoRoom;
-                }
-                shownCompact = choice.Value.compact;
-                chosen = shownCompact ? compact : full;
-                var origin = new Native.POINT(choice.Value.x, newLayout.Bounds.Top);
-                Native.ScreenToClient(newLayout.Taskbar, ref origin);
-                clientX = origin.X;
+                Conceal();
+                return LabelState.NoRoom;
             }
+            shownCompact = choice.Value.compact;
+            Raster chosen = (shownCompact ? compact : full)!;
+            var origin = new Native.POINT(choice.Value.x, newLayout.Bounds.Top);
+            Native.ScreenToClient(newLayout.Taskbar, ref origin);
+            int clientX = origin.X;
 
             var target = new Native.RECT { Left = clientX, Top = 0, Right = clientX + chosen.Width, Bottom = chosen.Height };
             if (!ReferenceEquals(chosen, shown) || !SameRect(target, placed))
@@ -146,6 +148,16 @@ namespace Countdown
                 BringToFront();
             }
             return LabelState.Shown;
+        }
+
+        /// <summary>Makes the label let mouse input through to the taskbar (layered windows only).</summary>
+        void SetClickThrough(bool on)
+        {
+            if (Handle == IntPtr.Zero || on == clickThrough) return;
+            int style = Native.GetWindowLong(Handle, Native.GWL_EXSTYLE);
+            style = on ? style | Native.WS_EX_TRANSPARENT : style & ~Native.WS_EX_TRANSPARENT;
+            Native.SetWindowLong(Handle, Native.GWL_EXSTYLE, style);
+            clickThrough = on;
         }
 
         /// <summary>
@@ -232,6 +244,7 @@ namespace Countdown
             full = null;
             compact = null;
             shown = null;
+            clickThrough = false;
             Log.Write($"label: created 0x{Handle.ToInt64():X} in taskbar 0x{taskbar.ToInt64():X}");
             return Handle != IntPtr.Zero;
         }

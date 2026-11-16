@@ -12,6 +12,8 @@ namespace Countdown
         public const int WS_CLIPSIBLINGS = 0x04000000;
         public const int WS_EX_LAYERED = 0x00080000;
         public const int WS_EX_TOOLWINDOW = 0x00000080;
+        public const int WS_EX_TRANSPARENT = 0x00000020;
+        public const int GWL_EXSTYLE = -20;
 
         public const int WM_NULL = 0x0000;
         public const int WM_SETTINGCHANGE = 0x001A;
@@ -161,6 +163,10 @@ namespace Countdown
         public static extern bool IsWindowVisible(IntPtr hWnd);
         [DllImport("user32.dll")]
         public static extern IntPtr GetAncestor(IntPtr hwnd, uint gaFlags);
+        [DllImport("user32.dll")]
+        public static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+        [DllImport("user32.dll")]
+        public static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
         [DllImport("user32.dll")]
         public static extern uint GetDpiForWindow(IntPtr hwnd);
         [DllImport("user32.dll", SetLastError = true)]

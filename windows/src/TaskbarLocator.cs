@@ -136,6 +136,7 @@ namespace Countdown
         static readonly object Gate = new object();
         static TaskbarSnapshot? latest;
         static int refreshedAt;
+        static int emptyScansInARow;
         static bool everRefreshed;
         static bool refreshing;
         static bool failed;
@@ -183,13 +184,18 @@ namespace Countdown
         static void Refresh(IntPtr taskbar)
         {
             TaskbarSnapshot? snapshot = TryTake(taskbar);
-            // A taskbar caught mid-change can come back with no buttons at all (Start is always
-            // there when it is up). Never let such a scan replace a good one: the label would
-            // then be placed as if the taskbar were empty, on top of the real buttons.
-            bool usable = snapshot != null && snapshot.Occupied.Count > 0;
             bool changed;
             lock (Gate)
             {
+                // A taskbar caught mid-change can come back with no buttons at all (Start is there
+                // whenever it is up). Such a scan must not replace a good one, or the label would
+                // be placed as if the taskbar were empty, on top of the real buttons. But when
+                // there is no good scan of this taskbar to keep, or the taskbar keeps coming back
+                // empty (a collapsed tablet taskbar), believe it rather than show nothing at all.
+                bool empty = snapshot != null && snapshot.Occupied.Count == 0;
+                emptyScansInARow = empty ? emptyScansInARow + 1 : 0;
+                bool haveGood = latest != null && latest.Taskbar == taskbar && latest.Occupied.Count > 0;
+                bool usable = snapshot != null && (!empty || !haveGood || emptyScansInARow >= 3);
                 changed = usable && !snapshot!.SameAs(latest);
                 if (usable) latest = snapshot;
                 failed = snapshot == null;
@@ -240,7 +246,7 @@ namespace Countdown
                     continue;
                 }
                 if (r.IsEmpty || r.Width <= 0 || r.Height <= 0) continue;
-                if (r.Right <= bounds.Left || r.Left >= bounds.Right) continue;
+                if (r.Right <= bounds.Left || r.Left >= bounds.Right || r.Bottom <= bounds.Top || r.Top >= bounds.Bottom) continue;
                 if (className.StartsWith("SystemTray.", StringComparison.Ordinal))
                 {
                     int left = (int)Math.Floor(r.Left);
