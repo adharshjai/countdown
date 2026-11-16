@@ -27,6 +27,8 @@ public static class Win {
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
     [StructLayout(LayoutKind.Sequential)] public struct APPBARDATA { public int cbSize; public IntPtr hWnd; public uint uCallbackMessage; public uint uEdge; public RECT rc; public IntPtr lParam; }
     [DllImport("shell32.dll")] public static extern UIntPtr SHAppBarMessage(uint msg, ref APPBARDATA data);
+    [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr hwnd, uint cmd);
+    [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
 }
 '@
 [void][Win]::SetProcessDPIAware()
@@ -208,33 +210,75 @@ Set-TaskbarTheme $previousTheme
 Write-Host '== placement: left, clear of every taskbar button'
 $normalLeft = Test-LabelClear 'placement'
 
-Write-Host '== auto-hiding taskbar: the label comes back with it, in the same place'
+Write-Host '== auto-hiding taskbar: the label comes back with it, in place and on top'
 $screenHeight = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Height
+
+function Test-TaskbarShown {
+    $r = New-Object 'Win+RECT'
+    [void][Win]::GetWindowRect([Win]::FindWindow('Shell_TrayWnd', [NullString]::Value), [ref] $r)
+    return ($r.Top -ge 0 -and $r.Bottom -le $screenHeight)
+}
+
+# Milliseconds until the condition holds, or -1 after the timeout.
+function Wait-Until([scriptblock] $Condition, [int] $TimeoutMs) {
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    while ($watch.ElapsedMilliseconds -lt $TimeoutMs) {
+        if (& $Condition) { return [int] $watch.ElapsedMilliseconds }
+        Start-Sleep -Milliseconds 20
+    }
+    return -1
+}
+
+# The label is up when it is visible, fully on screen, where it was before, and the top child of
+# the taskbar (GW_HWNDPREV is null), so none of Explorer's own windows covers it.
+function Test-LabelUp {
+    $handle = Get-Label
+    if ($handle -eq [IntPtr]::Zero -or -not [Win]::IsWindowVisible($handle)) { return $false }
+    $r = New-Object 'Win+RECT'
+    [void][Win]::GetWindowRect($handle, [ref] $r)
+    if ($r.Top -lt 0 -or $r.Bottom -gt $screenHeight -or [math]::Abs($r.Left - $normalLeft) -gt 1) { return $false }
+    return ([Win]::GetWindow($handle, 3) -eq [IntPtr]::Zero)
+}
+
+# Reveals an auto-hidden taskbar: first with the pointer at the bottom edge, as a person does,
+# then with Win+T. Returns how, or $null when this machine would not show it.
+function Show-HiddenTaskbar {
+    [void][Win]::SetCursorPos(400, $screenHeight - 30)
+    Start-Sleep -Milliseconds 50
+    [void][Win]::SetCursorPos(400, $screenHeight - 1)
+    if ((Wait-Until { Test-TaskbarShown } 2500) -ge 0) { return 'pointer' }
+    [Win]::keybd_event(0x5B, 0, 0, [UIntPtr]::Zero)
+    [Win]::keybd_event(0x54, 0, 0, [UIntPtr]::Zero)
+    [Win]::keybd_event(0x54, 0, 2, [UIntPtr]::Zero)
+    [Win]::keybd_event(0x5B, 0, 2, [UIntPtr]::Zero)
+    if ((Wait-Until { Test-TaskbarShown } 2500) -ge 0) { return 'Win+T' }
+    return $null
+}
+
+if (Test-LabelUp) { Write-Host 'before auto-hide: the label is on top of the taskbar' } else { Fail 'before auto-hide: the label is not up' }
 Set-AutoHide $true
 [void][Win]::SetCursorPos(400, 300)
-Start-Sleep -Seconds 3
+if ((Wait-Until { -not (Test-TaskbarShown) } 5000) -lt 0) { Write-Host 'note: the taskbar did not hide' }
 Save-Shot 'autohide-hidden'
 for ($i = 1; $i -le 3; $i++) {
-    [void][Win]::SetCursorPos(400, $screenHeight - 1)
-    [Win]::mouse_event(0x0001, 0, 0, 0, [UIntPtr]::Zero)
-    Start-Sleep -Milliseconds 250
-    if ($i -eq 1) { Save-Shot 'autohide-reveal-250ms' }
-    Start-Sleep -Milliseconds 450
-    if ($i -eq 1) { Save-Shot 'autohide-reveal-700ms' }
-    $r = Get-LabelRect
-    if ($null -eq $r) {
-        Fail "reveal ${i}: no label"
-    } elseif (-not [Win]::IsWindowVisible((Get-Label))) {
-        Fail "reveal ${i}: the label is hidden"
-    } elseif ($r.Bottom -gt $screenHeight -or $r.Top -lt 0) {
-        Fail "reveal ${i}: the label is not fully on screen 0.7 s after the taskbar was revealed ($($r.Left),$($r.Top))"
-    } elseif ([math]::Abs($r.Left - $normalLeft) -gt 1) {
-        Fail "reveal ${i}: the label came back at x=$($r.Left) instead of x=$normalLeft"
+    $how = Show-HiddenTaskbar
+    if ($null -eq $how) {
+        Write-Host "reveal ${i}: this machine would not reveal the taskbar; skipped"
     } else {
-        Write-Host "reveal ${i}: label on screen at $($r.Left),$($r.Top)"
+        $after = Wait-Until { Test-LabelUp } 1000
+        if ($i -eq 1) { Save-Shot 'autohide-revealed' }
+        if ($after -lt 0) {
+            $r = Get-LabelRect
+            Fail "reveal ${i} (by ${how}): the label was not up within 1 s of the taskbar (at $($r.Left),$($r.Top); top child: $([Win]::GetWindow((Get-Label), 3) -eq [IntPtr]::Zero))"
+        } elseif ($after -gt 300) {
+            Fail "reveal ${i} (by ${how}): the label took $after ms to come up after the taskbar"
+        } else {
+            Write-Host "reveal ${i} (by ${how}): the label was up $after ms after the taskbar"
+        }
     }
+    [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
     [void][Win]::SetCursorPos(400, 300)
-    Start-Sleep -Seconds 3
+    [void](Wait-Until { -not (Test-TaskbarShown) } 5000)
 }
 Set-AutoHide $false
 Start-Sleep -Seconds 4
