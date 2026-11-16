@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Drawing;
 using System.Threading;
 using System.Windows.Automation;
 using System.Windows.Forms;
@@ -16,6 +17,11 @@ namespace Countdown
         public int Dpi = 96;
         public bool IsHorizontal;
         public bool IsAtTop;
+        /// <summary>
+        /// The taskbar is not fully on screen: an auto-hiding taskbar that has slid away or is
+        /// sliding, or one Windows has hidden. Its buttons cannot be measured then.
+        /// </summary>
+        public bool IsHidden;
         /// <summary>Screen x where the notification area (tray icons and clock) begins.</summary>
         public int TrayLeft;
         public string TraySource = "";
@@ -44,8 +50,13 @@ namespace Countdown
             };
             var screen = Screen.FromHandle(taskbar).Bounds;
             layout.IsAtTop = bounds.Top <= screen.Top && bounds.Bottom < screen.Bottom;
+            var onScreen = Rectangle.Intersect(screen, new Rectangle(bounds.Left, bounds.Top, bounds.Width, bounds.Height));
+            layout.IsHidden = !Native.IsWindowVisible(taskbar)
+                || onScreen.Width < bounds.Width - 2 || onScreen.Height < bounds.Height - 2;
 
-            TaskbarSnapshot? snapshot = synchronousScan ? TaskbarScan.TryTake(taskbar) : TaskbarScan.Latest(taskbar);
+            TaskbarSnapshot? snapshot = synchronousScan
+                ? TaskbarScan.TryTake(taskbar)
+                : TaskbarScan.Latest(taskbar, allowRefresh: !layout.IsHidden);
             layout.Occupied = snapshot?.Occupied;
             // Without UI Automation the buttons stay unknown; place the label beside the tray anyway.
             if (snapshot == null && TaskbarScan.HasFailedFor(taskbar)) layout.Occupied = Array.Empty<(int left, int right)>();
@@ -141,13 +152,17 @@ namespace Countdown
             }
         }
 
-        /// <summary>The newest snapshot of this taskbar (null before the first), refreshing if due.</summary>
-        public static TaskbarSnapshot? Latest(IntPtr taskbar)
+        /// <summary>
+        /// The newest snapshot of this taskbar (null before the first), refreshing it if due and
+        /// allowed. Callers pass allowRefresh false while the taskbar is hidden.
+        /// </summary>
+        public static TaskbarSnapshot? Latest(IntPtr taskbar, bool allowRefresh = true)
         {
             lock (Gate)
             {
                 // Environment.TickCount is monotonic: setting the clock back cannot stall the scans.
-                if (!refreshing && (!everRefreshed || unchecked(Environment.TickCount - refreshedAt) >= RefreshMilliseconds))
+                if (allowRefresh && !refreshing
+                    && (!everRefreshed || unchecked(Environment.TickCount - refreshedAt) >= RefreshMilliseconds))
                 {
                     refreshing = true;
                     ThreadPool.QueueUserWorkItem(_ => Refresh(taskbar));
@@ -156,14 +171,27 @@ namespace Countdown
             }
         }
 
+        /// <summary>Makes the next Latest call scan, for example once a hidden taskbar is back.</summary>
+        public static void RequestRefresh()
+        {
+            lock (Gate)
+            {
+                everRefreshed = false;
+            }
+        }
+
         static void Refresh(IntPtr taskbar)
         {
             TaskbarSnapshot? snapshot = TryTake(taskbar);
+            // A taskbar caught mid-change can come back with no buttons at all (Start is always
+            // there when it is up). Never let such a scan replace a good one: the label would
+            // then be placed as if the taskbar were empty, on top of the real buttons.
+            bool usable = snapshot != null && snapshot.Occupied.Count > 0;
             bool changed;
             lock (Gate)
             {
-                changed = snapshot != null && !snapshot.SameAs(latest);
-                if (snapshot != null) latest = snapshot;
+                changed = usable && !snapshot!.SameAs(latest);
+                if (usable) latest = snapshot;
                 failed = snapshot == null;
                 refreshedAt = Environment.TickCount;
                 everRefreshed = true;
@@ -187,6 +215,7 @@ namespace Countdown
 
         static TaskbarSnapshot Take(IntPtr taskbar)
         {
+            Native.GetWindowRect(taskbar, out Native.RECT bounds);
             AutomationElement root = AutomationElement.FromHandle(taskbar);
             var condition = new OrCondition(
                 new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button),
@@ -199,7 +228,9 @@ namespace Countdown
                 System.Windows.Rect r;
                 try
                 {
-                    if (element.Current.IsOffscreen) continue;
+                    // Not IsOffscreen: Windows reports every button offscreen while the taskbar is
+                    // covered or sliding, which made the taskbar look empty. Its x positions stay
+                    // right, so judge by geometry instead.
                     className = element.Current.ClassName ?? "";
                     name = element.Current.Name ?? "";
                     r = element.Current.BoundingRectangle;
@@ -209,6 +240,7 @@ namespace Countdown
                     continue;
                 }
                 if (r.IsEmpty || r.Width <= 0 || r.Height <= 0) continue;
+                if (r.Right <= bounds.Left || r.Left >= bounds.Right) continue;
                 if (className.StartsWith("SystemTray.", StringComparison.Ordinal))
                 {
                     int left = (int)Math.Floor(r.Left);

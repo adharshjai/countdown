@@ -55,7 +55,7 @@ namespace Countdown
             if (layout != null)
             {
                 o.WriteLine($"Layout: tray left {layout.TrayLeft} from {layout.TraySource}, horizontal {layout.IsHorizontal}, " +
-                    $"top {layout.IsAtTop}, client height {layout.ClientHeight}");
+                    $"top {layout.IsAtTop}, hidden {layout.IsHidden}, client height {layout.ClientHeight}");
                 if (layout.Occupied != null)
                 {
                     int margin = Native.Scale(4, layout.Dpi);

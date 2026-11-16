@@ -70,20 +70,23 @@ namespace Countdown
                 Check($"TaskbarCompact({Describe(c.remaining)})", CountdownFormatter.TaskbarCompact(c.remaining), c.expected);
             }
 
-            // Placement on a taskbar whose label area runs from x=10 to x=800 (the tray).
-            var placementCases = new (string note, int width, (int, int)[]? occupied, string expected)[]
+            // Placement on a taskbar whose label area runs from x=10 to x=800 (the tray), for a
+            // label 200 wide with the name and 100 without: as far left as it fits.
+            var placementCases = new (string note, (int, int)[]? occupied, string expected)[]
             {
-                ("not scanned yet", 200, null, "none"),
-                ("room beside the tray", 200, new[] { (0, 100), (300, 500) }, "600"),
-                ("tray side crowded, room on the left", 200, new[] { (300, 700) }, "14"),
-                ("picks the widest free stretch", 200, new[] { (200, 230), (480, 700) }, "234"),
-                ("nothing fits", 200, new[] { (0, 790) }, "none"),
-                ("wider than the taskbar", 900, new (int, int)[0], "none"),
+                ("not scanned yet", null, "none"),
+                ("an empty taskbar: the left edge", new (int, int)[0], "14 full"),
+                ("right after Widgets, before the centred icons", new[] { (10, 160), (400, 700) }, "164 full"),
+                ("next to Widgets, only the time fits", new[] { (10, 160), (300, 700) }, "164 time"),
+                ("icons from the left edge: after them", new[] { (10, 500) }, "504 full"),
+                ("nothing fits", new[] { (10, 790) }, "none"),
             };
             foreach (var c in placementCases)
             {
-                int? x = Placement.Choose(c.width, 10, 800, c.occupied, 4);
-                Check($"Placement({c.note})", x.HasValue ? x.Value.ToString(CultureInfo.InvariantCulture) : "none", c.expected);
+                var choice = Placement.Choose(200, 100, 10, 800, c.occupied, 4);
+                string got = choice == null ? "none"
+                    : choice.Value.x.ToString(CultureInfo.InvariantCulture) + (choice.Value.compact ? " time" : " full");
+                Check($"Placement({c.note})", got, c.expected);
             }
 
             // Store validation: blank, missing or mistyped values fall back; good values are

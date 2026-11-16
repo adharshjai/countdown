@@ -63,6 +63,11 @@ namespace Countdown
         public const int ATTACH_PARENT_PROCESS = -1;
         public const uint LOAD_LIBRARY_SEARCH_SYSTEM32 = 0x00000800;
         public const uint MSGFLT_ALLOW = 1;
+        public const uint EVENT_OBJECT_REORDER = 0x8004;
+        public const uint EVENT_OBJECT_LOCATIONCHANGE = 0x800B;
+        public const uint WINEVENT_OUTOFCONTEXT = 0x0000;
+        public const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
+        public const int OBJID_WINDOW = 0;
         public static readonly IntPtr DPI_AWARENESS_CONTEXT_SYSTEM_AWARE = new IntPtr(-2);
 
         [StructLayout(LayoutKind.Sequential)]
@@ -239,6 +244,16 @@ namespace Countdown
         public static extern bool ChangeWindowMessageFilterEx(IntPtr hwnd, uint message, uint action, IntPtr pChangeFilterStruct);
         [DllImport("user32.dll")]
         public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr dpiContext);
+
+        // Window events from Explorer's taskbar thread
+        public delegate void WinEventProc(IntPtr hWinEventHook, uint eventType, IntPtr hwnd, int idObject, int idChild,
+            uint dwEventThread, uint dwmsEventTime);
+        [DllImport("user32.dll")]
+        public static extern IntPtr SetWinEventHook(uint eventMin, uint eventMax, IntPtr hmodWinEventProc, WinEventProc lpfnWinEventProc,
+            uint idProcess, uint idThread, uint dwFlags);
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool UnhookWinEvent(IntPtr hWinEventHook);
 
         // Console (for --check and --diagnose) and late-bound theme entry points
         [DllImport("kernel32.dll")]

@@ -52,6 +52,7 @@ namespace Countdown
         Raster? full;
         Raster? compact;
         Raster? shown;
+        bool shownCompact;
         Native.RECT placed;
 
         public TaskbarLayout? Layout => layout;
@@ -77,13 +78,6 @@ namespace Countdown
         {
             if (!EnsureWindow(newLayout.Taskbar)) return LabelState.Unavailable;
             layout = newLayout;
-            if (newLayout.Occupied == null)
-            {
-                // Until the first scan says where the buttons are, any spot could cover one.
-                Conceal();
-                return LabelState.NotReady;
-            }
-
             int newRgb = lightTaskbar ? 0x000000 : 0xFFFFFF;
             if (newRgb != textRgb || newLayout.Dpi != dpi || newLayout.ClientHeight != height || hover != renderedHover)
             {
@@ -105,25 +99,40 @@ namespace Countdown
                 compact = TextRaster.Render(compactText, StyleFor(lightTaskbar));
             }
 
-            int margin = Native.Scale(4, dpi);
-            int areaLeft = newLayout.Bounds.Left + margin;
-            int areaRight = newLayout.TrayLeft - margin;
-            Raster chosen = full;
-            int? screenX = Placement.Choose(full.Width, areaLeft, areaRight, newLayout.Occupied, margin);
-            if (screenX == null)
+            Raster chosen;
+            int clientX;
+            if (newLayout.IsHidden && shown != null)
             {
-                chosen = compact;
-                screenX = Placement.Choose(compact.Width, areaLeft, areaRight, newLayout.Occupied, margin);
+                // The taskbar has slid away (auto-hide) or is sliding. The label is its child and
+                // moves with it, so keep it exactly where it is: the buttons cannot be measured
+                // now, and moving it would make it reappear in the wrong place.
+                chosen = shownCompact ? compact : full;
+                clientX = placed.Left;
             }
-            if (screenX == null)
+            else
             {
-                Conceal();
-                return LabelState.NoRoom;
+                if (newLayout.Occupied == null)
+                {
+                    // Until the first scan says where the buttons are, any spot could cover one.
+                    Conceal();
+                    return LabelState.NotReady;
+                }
+                int margin = Native.Scale(4, dpi);
+                var choice = Placement.Choose(full.Width, compact.Width, newLayout.Bounds.Left + margin,
+                    newLayout.TrayLeft - margin, newLayout.Occupied, margin);
+                if (choice == null)
+                {
+                    Conceal();
+                    return LabelState.NoRoom;
+                }
+                shownCompact = choice.Value.compact;
+                chosen = shownCompact ? compact : full;
+                var origin = new Native.POINT(choice.Value.x, newLayout.Bounds.Top);
+                Native.ScreenToClient(newLayout.Taskbar, ref origin);
+                clientX = origin.X;
             }
 
-            var origin = new Native.POINT(screenX.Value, newLayout.Bounds.Top);
-            Native.ScreenToClient(newLayout.Taskbar, ref origin);
-            var target = new Native.RECT { Left = origin.X, Top = 0, Right = origin.X + chosen.Width, Bottom = chosen.Height };
+            var target = new Native.RECT { Left = clientX, Top = 0, Right = clientX + chosen.Width, Bottom = chosen.Height };
             if (!ReferenceEquals(chosen, shown) || !SameRect(target, placed))
             {
                 Native.SetWindowPos(Handle, Native.HWND_TOP, target.Left, target.Top, target.Width, target.Height,
@@ -134,11 +143,20 @@ namespace Countdown
             }
             else
             {
-                // Explorer reorders its own children now and then; stay on top of them.
-                Native.SetWindowPos(Handle, Native.HWND_TOP, 0, 0, 0, 0,
-                    Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE | Native.SWP_SHOWWINDOW);
+                BringToFront();
             }
             return LabelState.Shown;
+        }
+
+        /// <summary>
+        /// Puts the label back above the taskbar's own windows, which Explorer reorders now and
+        /// then (TaskbarEvents calls this the moment it does).
+        /// </summary>
+        public void BringToFront()
+        {
+            if (Handle == IntPtr.Zero || shown == null) return;
+            Native.SetWindowPos(Handle, Native.HWND_TOP, 0, 0, 0, 0,
+                Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE | Native.SWP_SHOWWINDOW);
         }
 
         /// <summary>The label in screen pixels, for anchoring the menu.</summary>

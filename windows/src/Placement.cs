@@ -7,29 +7,23 @@ namespace Countdown
     /// <summary>
     /// Where on the taskbar the label goes. Pure, so the self-check covers it.
     ///
-    /// The free stretches are the parts of [areaLeft, areaRight] that no taskbar button covers.
-    /// The label hugs the notification area when the stretch beside it is wide enough (like the
-    /// clock), else it takes the widest other stretch, left-aligned (on Windows 11 that is
-    /// usually the empty left side next to the centred icons). Null when nothing fits or
-    /// the buttons are not known yet.
+    /// As far left as it fits: on Windows 11 that is right after the Widgets button, or the
+    /// taskbar's left edge when there is no Widgets button. The free stretches (the parts of
+    /// [areaLeft, areaRight] no taskbar button covers) are tried from the left. In each one the
+    /// full text is tried first, then the time alone; the label only moves further right when a
+    /// stretch cannot hold even the time. Null when nothing fits or the buttons are not known yet.
     /// </summary>
     internal static class Placement
     {
-        public static int? Choose(int width, int areaLeft, int areaRight, IReadOnlyList<(int left, int right)>? occupied, int margin)
+        public static (int x, bool compact)? Choose(int fullWidth, int compactWidth, int areaLeft, int areaRight,
+            IReadOnlyList<(int left, int right)>? occupied, int margin)
         {
-            if (width <= 0 || areaRight - areaLeft < width) return null;
             if (occupied == null) return null; // not scanned yet: any spot could cover a button
-
-            var gaps = FreeStretches(areaLeft, areaRight, occupied);
-            var besideTray = gaps.FirstOrDefault(g => g.right == areaRight);
-            if (besideTray.right == areaRight && besideTray.right - besideTray.left >= width + margin)
+            foreach (var gap in FreeStretches(areaLeft, areaRight, occupied))
             {
-                return areaRight - width;
-            }
-            foreach (var gap in gaps.OrderByDescending(g => g.right - g.left))
-            {
-                if (gap.right == areaRight) continue;
-                if (gap.right - gap.left >= width + 2 * margin) return gap.left + margin;
+                int room = gap.right - gap.left - 2 * margin;
+                if (fullWidth > 0 && fullWidth <= room) return (gap.left + margin, false);
+                if (compactWidth > 0 && compactWidth <= room) return (gap.left + margin, true);
             }
             return null;
         }

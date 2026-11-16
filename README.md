@@ -49,13 +49,13 @@ Requires Windows 10 or 11. It uses .NET Framework 4.8, which Windows already inc
    for example a `Countdown` folder in your user folder.
 2. Windows SmartScreen may warn that the app is unrecognized because it is not signed.
    Choose **More info**, then **Run anyway**.
-3. The countdown appears in the taskbar, just left of the clock and tray icons. Click it and
+3. The countdown appears at the left end of the taskbar, right after Widgets. Click it and
    choose **Set Countdown…** to pick your event. **Start with Windows** starts it at sign-in.
 
-It never covers app buttons. When the space beside the clock is taken it moves to the
-taskbar's free space, usually the empty left side of a centred Windows 11 taskbar; with no
-room at all it shows just the time, and as a last resort, or on a vertical taskbar, it
-becomes a tray icon whose tooltip shows the countdown.
+It never covers app buttons. If the space next to Widgets is too narrow for the whole line,
+it shows just the time there; only when even that does not fit does it move to the next free
+space, and as a last resort, or on a vertical taskbar, it becomes a tray icon whose tooltip
+shows the countdown. With an auto-hiding taskbar it slides away and back with the taskbar.
 Settings are stored under `HKEY_CURRENT_USER\Software\Countdown`.
 
 Build it yourself with the [.NET SDK](https://dotnet.microsoft.com/download):
@@ -72,9 +72,9 @@ Then run `windows\out\Countdown.exe --check` to test the text formatting, or
 - **macOS** (Swift, AppKit and SwiftUI): an `NSStatusItem` with a monospaced-digit title and a
   SwiftUI settings window.
 - **Windows** (C#, .NET Framework 4.8): a transparent layered window hosted inside the taskbar,
-  drawn with the taskbar's own font and text color, light or dark. It finds the notification
-  area through the classic window tree on Windows 10 and through UI Automation on Windows 11,
-  and rebuilds itself if Explorer restarts.
+  drawn with the taskbar's own font and text color, light or dark. It measures the taskbar's
+  buttons through UI Automation to find free space, follows Explorer's window events to stay
+  on top and in step with an auto-hiding taskbar, and rebuilds itself if Explorer restarts.
 - Both compute the time left from the clock on every tick instead of counting down, so the
   display stays correct after sleep, clock changes and daylight saving changes.
 

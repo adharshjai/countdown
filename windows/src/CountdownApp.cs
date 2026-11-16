@@ -21,6 +21,9 @@ namespace Countdown
         readonly MessageWindow messages = new MessageWindow();
         readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
         readonly TaskbarLabel label = new TaskbarLabel();
+        readonly TaskbarEvents taskbarEvents = new TaskbarEvents();
+        /// <summary>Fires once the taskbar has stopped moving (an auto-hide slide is many moves).</summary>
+        readonly System.Windows.Forms.Timer settleTimer = new System.Windows.Forms.Timer { Interval = 150 };
         readonly NotifyIcon tray = new NotifyIcon();
         readonly Icon appIcon = AppIcon.Load();
         SettingsForm? settings;
@@ -50,6 +53,23 @@ namespace Countdown
             SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
             SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
             TaskbarScan.Changed += ResyncOnUiThread;
+
+            // Explorer raises its own windows over the label now and then, notably when an
+            // auto-hiding taskbar slides back in: put the label back on top at once, not on the
+            // next tick. Once the taskbar settles, measure its buttons again and lay out.
+            taskbarEvents.Reordered += label.BringToFront;
+            taskbarEvents.Moved += () =>
+            {
+                label.BringToFront();
+                settleTimer.Stop();
+                settleTimer.Start();
+            };
+            settleTimer.Tick += (s, e) =>
+            {
+                settleTimer.Stop();
+                TaskbarScan.RequestRefresh();
+                Resync();
+            };
 
             timer.Tick += (s, e) => Resync();
             Resync();
@@ -103,6 +123,7 @@ namespace Countdown
             string title = CountdownFormatter.TaskbarTitle(remaining, TaskbarLabel.Shorten(target.Name));
             LabelState state = LabelState.Unavailable;
             TaskbarLayout? layout = TaskbarLocator.Find();
+            if (layout != null) taskbarEvents.Watch(layout.Taskbar);
             if (layout != null && layout.IsHorizontal)
             {
                 state = label.Update(title, CountdownFormatter.TaskbarCompact(remaining), layout, light);
@@ -289,6 +310,8 @@ namespace Countdown
         protected override void ExitThreadCore()
         {
             timer.Stop();
+            settleTimer.Stop();
+            taskbarEvents.Dispose();
             SystemEvents.PowerModeChanged -= OnPowerModeChanged;
             SystemEvents.TimeChanged -= OnTimeChanged;
             SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
@@ -309,6 +332,8 @@ namespace Countdown
             if (disposing)
             {
                 timer.Dispose();
+                settleTimer.Dispose();
+                taskbarEvents.Dispose();
                 tray.Dispose();
                 label.Dispose();
                 settings?.Dispose();

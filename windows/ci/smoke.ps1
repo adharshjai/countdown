@@ -24,6 +24,9 @@ public static class Win {
     [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr SendMessageTimeout(IntPtr hwnd, uint msg, IntPtr wParam, string lParam, uint flags, uint timeout, out IntPtr result);
+    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
+    [StructLayout(LayoutKind.Sequential)] public struct APPBARDATA { public int cbSize; public IntPtr hWnd; public uint uCallbackMessage; public uint uEdge; public RECT rc; public IntPtr lParam; }
+    [DllImport("shell32.dll")] public static extern UIntPtr SHAppBarMessage(uint msg, ref APPBARDATA data);
 }
 '@
 [void][Win]::SetProcessDPIAware()
@@ -94,6 +97,57 @@ function Set-Countdown([string] $Name, [datetime] $WhenUtc) {
     New-ItemProperty -Path $key -Name Target -Value $WhenUtc.ToString('o') -PropertyType String -Force | Out-Null
 }
 
+$script:Failed = $false
+function Fail([string] $Message) {
+    Write-Host "FAIL: $Message"
+    $script:Failed = $true
+}
+
+function Get-Label {
+    $taskbar = [Win]::FindWindow('Shell_TrayWnd', [NullString]::Value)
+    return [Win]::FindWindowEx($taskbar, [IntPtr]::Zero, [NullString]::Value, 'CountdownTaskbarLabel')
+}
+
+function Get-LabelRect {
+    $handle = Get-Label
+    if ($handle -eq [IntPtr]::Zero) { return $null }
+    $r = New-Object 'Win+RECT'
+    [void][Win]::GetWindowRect($handle, [ref] $r)
+    return $r
+}
+
+# Runs --diagnose, fails if the label overlaps any taskbar button, and returns its left edge.
+function Test-LabelClear([string] $Name) {
+    [void](Invoke-Cli '--diagnose' "diagnose-$Name")
+    $text = Get-Content (Join-Path $OutDir "diagnose-$Name.txt") -Raw -Encoding UTF8
+    $m = [regex]::Match($text, 'Running label 0x[0-9A-F]+ \[(-?\d+),(-?\d+) (\d+)x(\d+)\]')
+    if (-not $m.Success) { Fail "${Name}: the label is not on the taskbar"; return -1 }
+    $left = [int]$m.Groups[1].Value
+    $right = $left + [int]$m.Groups[3].Value
+    $buttons = [regex]::Match($text, 'buttons: ([0-9\- ]+)')
+    if ($buttons.Success) {
+        foreach ($span in $buttons.Groups[1].Value.Trim().Split(' ')) {
+            $edges = $span.Split('-')
+            if ([int]$edges[0] -lt $right -and [int]$edges[1] -gt $left) {
+                Fail "${Name}: the label [$left-$right] overlaps the taskbar button at $span"
+            }
+        }
+    }
+    Write-Host "${Name}: label at $left-$right"
+    return $left
+}
+
+function Set-AutoHide([bool] $On) {
+    $data = New-Object 'Win+APPBARDATA'
+    $data.cbSize = [System.Runtime.InteropServices.Marshal]::SizeOf([type] 'Win+APPBARDATA')
+    $data.hWnd = [Win]::FindWindow('Shell_TrayWnd', [NullString]::Value)
+    $state = 2                 # ABS_ALWAYSONTOP: auto-hide off
+    if ($On) { $state = 1 }    # ABS_AUTOHIDE
+    $data.lParam = [IntPtr] $state
+    [void][Win]::SHAppBarMessage(0xA, [ref] $data)    # ABM_SETSTATE
+    Start-Sleep -Seconds 1
+}
+
 function Set-TaskbarTheme([int] $Light) {
     Confirm-Key $personalize
     New-ItemProperty -Path $personalize -Name SystemUsesLightTheme -Value $Light -PropertyType DWord -Force | Out-Null
@@ -150,6 +204,43 @@ Set-TaskbarTheme 1
 Save-Shot 'light'
 if ($null -eq $previousTheme) { $previousTheme = 0 }
 Set-TaskbarTheme $previousTheme
+
+Write-Host '== placement: left, clear of every taskbar button'
+$normalLeft = Test-LabelClear 'placement'
+
+Write-Host '== auto-hiding taskbar: the label comes back with it, in the same place'
+$screenHeight = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Height
+Set-AutoHide $true
+[void][Win]::SetCursorPos(400, 300)
+Start-Sleep -Seconds 3
+Save-Shot 'autohide-hidden'
+for ($i = 1; $i -le 3; $i++) {
+    [void][Win]::SetCursorPos(400, $screenHeight - 1)
+    [Win]::mouse_event(0x0001, 0, 0, 0, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 250
+    if ($i -eq 1) { Save-Shot 'autohide-reveal-250ms' }
+    Start-Sleep -Milliseconds 450
+    if ($i -eq 1) { Save-Shot 'autohide-reveal-700ms' }
+    $r = Get-LabelRect
+    if ($null -eq $r) {
+        Fail "reveal ${i}: no label"
+    } elseif (-not [Win]::IsWindowVisible((Get-Label))) {
+        Fail "reveal ${i}: the label is hidden"
+    } elseif ($r.Bottom -gt $screenHeight -or $r.Top -lt 0) {
+        Fail "reveal ${i}: the label is not fully on screen 0.7 s after the taskbar was revealed ($($r.Left),$($r.Top))"
+    } elseif ([math]::Abs($r.Left - $normalLeft) -gt 1) {
+        Fail "reveal ${i}: the label came back at x=$($r.Left) instead of x=$normalLeft"
+    } else {
+        Write-Host "reveal ${i}: label on screen at $($r.Left),$($r.Top)"
+    }
+    [void][Win]::SetCursorPos(400, 300)
+    Start-Sleep -Seconds 3
+}
+Set-AutoHide $false
+Start-Sleep -Seconds 4
+Save-Shot 'autohide-off'
+$afterLeft = Test-LabelClear 'after-autohide'
+if ($afterLeft -ne $normalLeft) { Fail "after auto-hide was turned off the label sits at x=$afterLeft instead of x=$normalLeft" }
 Stop-Countdown $app
 
 Write-Host '== finished countdown, then a second launch opens settings'
@@ -166,3 +257,7 @@ if (Test-Path $log) {
     Copy-Item $log (Join-Path $OutDir 'Countdown.log')
     Get-Content $log | Write-Host
 }
+
+if ($script:Failed) { throw 'smoke test failed' }
+Write-Host '== all checks passed'
+
